@@ -1,0 +1,10 @@
+{
+  "periods": [
+    { "name": "Cambrian", "top": 485, "base": 541, "color": "#6baed6" },
+    { "name": "Ordovician", "top": 444, "base": 485, "color": "#9ecae1" },
+    { "name": "Silurian", "top": 419, "base": 444, "color": "#c6dbef" },
+    { "name": "Devonian", "top": 359, "base": 419, "color": "#fdae6b" },
+    { "name": "Carboniferous", "top": 299, "base": 359, "color": "#fd8d3c" },
+    { "name": "Permian", "top": 252, "base": 299, "color": "#e6550d" }
+  ]
+}
