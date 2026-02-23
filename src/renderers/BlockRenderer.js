@@ -6,19 +6,24 @@ export function renderBlocks({
   orientation,
   level,
   visibleLevels,
-  columnWidths,
-  axisColumnWidth
+  columnWidths
 }) {
 
   const unitMap = Object.fromEntries(allUnits.map(u => [u.id, u]));
+
+  // Build ordered horizontal column list from visibleLevels
+  const orderedColumns = visibleLevels.map(lvl => ({
+    level: lvl,
+    width: columnWidths[lvl]
+  }));
 
   levelUnits.forEach(unit => {
 
     const currentIndex = visibleLevels.indexOf(level);
     if (currentIndex === -1) return;
 
-    let spanStart = currentIndex;
-    let spanEnd = currentIndex;
+    let spanStartIndex = currentIndex;
+    let spanEndIndex = currentIndex;
 
     // ---- Upward span ----
     let parentId = unit.parent;
@@ -33,38 +38,47 @@ export function renderBlocks({
       parentId = parent?.parent;
     }
 
-    if (!hasVisibleParent) spanStart = 0;
+    if (!hasVisibleParent) spanStartIndex = 0;
 
-    // ---- Downward span (stop at first visible level with children) ----
-for (let i = currentIndex + 1; i < visibleLevels.length; i++) {
+    // ---- Downward span ----
+    for (let i = currentIndex + 1; i < visibleLevels.length; i++) {
 
-  const nextLevel = visibleLevels[i];
+      const nextLevel = visibleLevels[i];
 
-  const hasChildAtLevel = allUnits.some(u =>
-    u.parent === unit.id &&
-    u.levelOrder === nextLevel
-  );
+      const hasChildAtLevel = allUnits.some(u =>
+        u.parent === unit.id &&
+        u.levelOrder === nextLevel
+      );
 
-  if (hasChildAtLevel) {
-    // Stop before this level
-    spanEnd = i - 1;
-    break;
-  }
+      if (hasChildAtLevel) {
+        spanEndIndex = i - 1;
+        break;
+      }
 
-  // If no child at this level, allow spanning into it
-  spanEnd = i;
-}
-
-
-    let spanOffset = axisColumnWidth;
-    for (let i = 0; i < spanStart; i++) {
-      spanOffset += columnWidths[visibleLevels[i]];
+      spanEndIndex = i;
     }
 
+    // ==============================
+    // Horizontal layout (layout-based)
+    // ==============================
+
+    // Start after Time column
+    let spanOffset = columnWidths.time ?? 0;
+
+    // Add widths of hierarchy columns before span start
+    for (let i = 0; i < spanStartIndex; i++) {
+      spanOffset += orderedColumns[i].width;
+    }
+
+    // Calculate total span width
     let spanWidth = 0;
-    for (let i = spanStart; i <= spanEnd; i++) {
-      spanWidth += columnWidths[visibleLevels[i]];
+    for (let i = spanStartIndex; i <= spanEndIndex; i++) {
+      spanWidth += orderedColumns[i].width;
     }
+
+    // ==============================
+    // Vertical layout (time scale)
+    // ==============================
 
     const pos1 = scale(unit.start);
     const pos2 = scale(unit.end);

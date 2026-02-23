@@ -5,10 +5,12 @@ export function renderAxis({
   scale,
   orientation,
   width,
-  height
+  height,
+  xOffset = 0   // NEW: allows horizontal shifting
 }) {
 
-  const axisX = 50;
+  // Shift axis by xOffset (for Age column)
+  const axisX = xOffset + 50;
 
   const domain = scale.domain();
   const domainWidth = Math.abs(domain[1] - domain[0]);
@@ -84,6 +86,7 @@ export function renderAxis({
     if (orientation === "vertical") {
       label.setAttribute("x", axisX + 15);
       label.setAttribute("y", pos + 4);
+      label.setAttribute("text-anchor", "start");
     } else {
       label.setAttribute("x", pos);
       label.setAttribute("y", axisX + 20);

@@ -1,9 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 
-import { renderAxis } from "./renderers/AxisRenderer";
 import { renderBlocks } from "./renderers/BlockRenderer";
 import geologicTime from "./data/geologicTime.json";
+
+function computeLayout(columns, columnWidths) {
+  let offset = 0;
+
+  return columns.map(col => {
+    const width = columnWidths[col.id] ?? columnWidths[col.level];
+    const start = offset;
+    const end = start + width;
+    offset = end;
+
+    return { ...col, start, width, end };
+  });
+}
 
 function App() {
   const svgRef = useRef(null);
@@ -22,6 +34,7 @@ function App() {
   ]);
 
   const [columnWidths, setColumnWidths] = useState({
+    time: 80,
     0: 80,
     1: 80,
     2: 80,
@@ -33,6 +46,24 @@ function App() {
 
   const [currentTransform, setCurrentTransform] = useState(d3.zoomIdentity);
 
+  const visibleLevels = columnConfig
+    .filter(col => col.visible)
+    .map(col => col.level)
+    .sort((a, b) => a - b);
+
+  const hierarchyColumns = visibleLevels.map(level => ({
+    id: level,
+    type: "hierarchy",
+    level
+  }));
+
+  const columns = [
+    { id: "time", type: "time" },
+    ...hierarchyColumns
+  ];
+
+  const layout = computeLayout(columns, columnWidths);
+
   useEffect(() => {
 
     const svgElement = svgRef.current;
@@ -43,22 +74,26 @@ function App() {
     const width = svgElement.clientWidth;
     const height = svgElement.clientHeight;
 
-    const topAge = 0;
-    const baseAge = 4600;
-
     const svg = d3.select(svgElement);
     const zoomLayer = svg.append("g");
     zoomLayer.attr("transform", currentTransform);
 
-    const scale = d3.scaleLinear()
-      .domain([topAge, baseAge])
-      .range(
-        orientation === "vertical"
-          ? [0, height]
-          : [width, 0]
-      );
+    // Invisible canonical time scale (data-driven)
+const ICS_MIN_AGE = 0;
 
-    const axisColumnWidth = 100;
+const ICS_MAX_AGE = Math.max(
+  ...geologicTime.units
+    .filter(u => u.start !== null)
+    .map(u => u.start)
+);
+
+const scale = d3.scaleLinear()
+  .domain([ICS_MIN_AGE, ICS_MAX_AGE])
+  .range(
+    orientation === "vertical"
+      ? [0, height]
+      : [width, 0]
+  );
 
     const allUnits = geologicTime.units.map(u => {
       let adjustedLevel = u.levelOrder;
@@ -68,19 +103,59 @@ function App() {
       return { ...u, levelOrder: adjustedLevel };
     });
 
-    renderAxis({
-      svg: zoomLayer.node(),
-      scale,
-      orientation,
-      width,
-      height
-    });
+   // ===== TIME COLUMN =====
+const timeColumn = layout.find(col => col.id === "time");
 
-    const visibleLevels = columnConfig
-      .filter(col => col.visible)
-      .map(col => col.level)
-      .sort((a, b) => a - b);
+// Background
+const timeBackground = document.createElementNS(
+  "http://www.w3.org/2000/svg",
+  "rect"
+);
 
+if (orientation === "vertical") {
+  timeBackground.setAttribute("x", timeColumn.start);
+  timeBackground.setAttribute("y", 0);
+  timeBackground.setAttribute("width", timeColumn.width);
+  timeBackground.setAttribute("height", height);
+} else {
+  timeBackground.setAttribute("x", 0);
+  timeBackground.setAttribute("y", timeColumn.start);
+  timeBackground.setAttribute("width", width);
+  timeBackground.setAttribute("height", timeColumn.width);
+}
+
+timeBackground.setAttribute("fill", "white");
+timeBackground.setAttribute("stroke", "black");
+timeBackground.setAttribute("stroke-width", "0.5");
+
+zoomLayer.node().appendChild(timeBackground);
+
+// Tick labels
+scale.ticks(12).forEach(age => {
+
+  const pos = scale(age);
+
+  const text = document.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "text"
+  );
+
+  if (orientation === "vertical") {
+    text.setAttribute("x", timeColumn.end - 6);
+    text.setAttribute("y", pos + 4);
+    text.setAttribute("text-anchor", "end");
+  } else {
+    text.setAttribute("x", pos);
+    text.setAttribute("y", timeColumn.end - 6);
+    text.setAttribute("text-anchor", "middle");
+  }
+
+  text.setAttribute("font-size", "10");
+  text.textContent = age.toFixed(0) + " Ma";
+
+  zoomLayer.node().appendChild(text);
+});
+    // ===== BLOCKS =====
     visibleLevels.forEach(level => {
 
       const levelUnits = allUnits
@@ -100,8 +175,9 @@ function App() {
         level,
         visibleLevels,
         columnWidths,
-        axisColumnWidth
+        axisColumnWidth: timeColumn.end
       });
+
     });
 
     const zoom = d3.zoom()
@@ -114,11 +190,6 @@ function App() {
     svg.call(zoom);
 
   }, [orientation, columnConfig, columnWidths, currentTransform]);
-
-  const visibleLevels = columnConfig
-    .filter(col => col.visible)
-    .map(col => col.level)
-    .sort((a, b) => a - b);
 
   return (
     <div style={{
@@ -183,10 +254,6 @@ function App() {
             ))}
           </div>
         )}
-
-        {activeTab !== "Layout" && (
-          <div>Controls for {activeTab} will go here.</div>
-        )}
       </div>
 
       {/* Visualization Area */}
@@ -200,28 +267,18 @@ function App() {
         />
 
         {/* Resize Handles */}
-        {visibleLevels.map((level, index) => {
-
-          const axisWidth = 100;
-
-          let accumulated = 0;
-          for (let i = 0; i < index; i++) {
-            accumulated += columnWidths[visibleLevels[i]];
-          }
-
-          const edgePosition = axisWidth + accumulated + columnWidths[level];
+        {layout.map(col => {
 
           const k = currentTransform.k || 1;
           const tx = currentTransform.x || 0;
-          const ty = currentTransform.y || 0;
 
           if (orientation === "vertical") {
 
-            const handleX = (edgePosition * k) + tx;
+            const handleX = (col.end * k) + tx;
 
             return (
               <div
-                key={level}
+                key={col.id}
                 style={{
                   position: "absolute",
                   left: handleX - 3,
@@ -234,55 +291,15 @@ function App() {
                 onMouseDown={(e) => {
                   e.preventDefault();
                   const startX = e.clientX;
-                  const startWidth = columnWidths[level];
+                  const startWidth = col.width;
 
                   const onMouseMove = (moveEvent) => {
                     const delta = (moveEvent.clientX - startX) / k;
                     const newWidth = Math.max(20, startWidth + delta);
+
                     setColumnWidths(prev => ({
                       ...prev,
-                      [level]: newWidth
-                    }));
-                  };
-
-                  const onMouseUp = () => {
-                    window.removeEventListener("mousemove", onMouseMove);
-                    window.removeEventListener("mouseup", onMouseUp);
-                  };
-
-                  window.addEventListener("mousemove", onMouseMove);
-                  window.addEventListener("mouseup", onMouseUp);
-                }}
-              />
-            );
-
-          } else {
-
-            const handleY = (edgePosition * k) + ty;
-
-            return (
-              <div
-                key={level}
-                style={{
-                  position: "absolute",
-                  top: handleY - 3,
-                  left: 0,
-                  height: 6,
-                  width: "100%",
-                  cursor: "ns-resize",
-                  zIndex: 15
-                }}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  const startY = e.clientY;
-                  const startHeight = columnWidths[level];
-
-                  const onMouseMove = (moveEvent) => {
-                    const delta = (moveEvent.clientY - startY) / k;
-                    const newHeight = Math.max(20, startHeight + delta);
-                    setColumnWidths(prev => ({
-                      ...prev,
-                      [level]: newHeight
+                      [col.id]: newWidth
                     }));
                   };
 
@@ -299,10 +316,10 @@ function App() {
 
           }
 
+          return null;
         })}
 
       </div>
-
     </div>
   );
 }
