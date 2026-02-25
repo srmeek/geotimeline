@@ -1,3 +1,4 @@
+import { renderPicks } from "./renderers/PicksRenderer";
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 
@@ -41,15 +42,31 @@ function App() {
     3: 80,
     4: 80,
     5: 80,
-    6: 80
+    6: 80,
+    picks: 60
   });
 
   const [currentTransform, setCurrentTransform] = useState(d3.zoomIdentity);
+
+  const [picksMode, setPicksMode] = useState("auto"); 
+// "auto" | "manual"
+
+  const [manualPicksLevel, setManualPicksLevel] = useState(null);
 
   const visibleLevels = columnConfig
     .filter(col => col.visible)
     .map(col => col.level)
     .sort((a, b) => a - b);
+
+    let picksLevel;
+
+if (picksMode === "auto") {
+  picksLevel = visibleLevels.length
+    ? Math.max(...visibleLevels)
+    : null;
+} else {
+  picksLevel = manualPicksLevel;
+}
 
   const hierarchyColumns = visibleLevels.map(level => ({
     id: level,
@@ -58,9 +75,10 @@ function App() {
   }));
 
   const columns = [
-    { id: "time", type: "time" },
-    ...hierarchyColumns
-  ];
+  { id: "time", type: "time" },
+  ...hierarchyColumns,
+  { id: "picks", type: "picks" }
+];
 
   const layout = computeLayout(columns, columnWidths);
 
@@ -77,6 +95,11 @@ function App() {
     const svg = d3.select(svgElement);
     const zoomLayer = svg.append("g");
     zoomLayer.attr("transform", currentTransform);
+
+// ===== Rendering Layers =====
+const backgroundLayer = zoomLayer.append("g");
+const blockLayer = zoomLayer.append("g");
+const picksLayer = zoomLayer.append("g");
 
     // Invisible canonical time scale (data-driven)
 const ICS_MIN_AGE = 0;
@@ -103,10 +126,72 @@ const scale = d3.scaleLinear()
       return { ...u, levelOrder: adjustedLevel };
     });
 
-   // ===== TIME COLUMN =====
+// ===== PICKS BOUNDARY RESOLUTION =====
+
+let boundaryAges = [];
+
+if ((picksMode === "auto" && visibleLevels.length) ||
+    (picksMode === "manual" && manualPicksLevel !== null)) {
+
+  // Determine which levels to consider
+
+  let candidateLevels;
+
+  if (picksMode === "auto") {
+    candidateLevels = [...visibleLevels];
+  } else {
+    // Manual: start at selected level and include all higher levels for fallback
+    candidateLevels = visibleLevels.filter(
+      lvl => lvl <= manualPicksLevel
+    );
+  }
+
+  // Sort deepest → shallowest
+  const sortedLevels = [...candidateLevels].sort((a, b) => b - a);
+
+  const boundaryMap = new Map();
+
+  sortedLevels.forEach(level => {
+
+    const unitsAtLevel = allUnits
+      .filter(u => u.levelOrder === level)
+      .filter(u => u.start !== null);
+
+    unitsAtLevel.forEach(unit => {
+
+      if (!boundaryMap.has(unit.start)) {
+        boundaryMap.set(unit.start, []);
+      }
+
+      boundaryMap.get(unit.start).push(level);
+
+    });
+
+  });
+
+  // Keep deepest available level for each boundary
+  boundaryMap.forEach((levels, age) => {
+
+    const deepestLevel = Math.max(...levels);
+
+    boundaryAges.push(age);
+
+  });
+
+}
+
+// Always include present day (0 Ma)
+if (!boundaryAges.includes(0)) {
+  boundaryAges.push(0);
+}
+
+boundaryAges = [...new Set(boundaryAges)]
+  .sort((a, b) => b - a);
+
+// ===== TIME COLUMN =====
+
 const timeColumn = layout.find(col => col.id === "time");
 
-// Background
 const timeBackground = document.createElementNS(
   "http://www.w3.org/2000/svg",
   "rect"
@@ -128,57 +213,212 @@ timeBackground.setAttribute("fill", "white");
 timeBackground.setAttribute("stroke", "black");
 timeBackground.setAttribute("stroke-width", "0.5");
 
-zoomLayer.node().appendChild(timeBackground);
+backgroundLayer.node().appendChild(timeBackground);
 
 // Tick labels
-scale.ticks(12).forEach(age => {
+// ===== Time Axis Ticks =====
+
+const tickValues = scale.ticks(40); // dense ticks
+const majorEvery = 5;
+
+tickValues.forEach((age, index) => {
 
   const pos = scale(age);
 
-  const text = document.createElementNS(
+  const isMajor = index % majorEvery === 0;
+
+  const tick = document.createElementNS(
     "http://www.w3.org/2000/svg",
-    "text"
+    "line"
   );
 
+  const minorLength = 6;
+  const majorLength = 12;
+
   if (orientation === "vertical") {
-    text.setAttribute("x", timeColumn.end - 6);
-    text.setAttribute("y", pos + 4);
-    text.setAttribute("text-anchor", "end");
+
+    const tickLength = isMajor ? majorLength : minorLength;
+
+    tick.setAttribute("x1", timeColumn.end - tickLength);
+    tick.setAttribute("x2", timeColumn.end);
+    tick.setAttribute("y1", pos);
+    tick.setAttribute("y2", pos);
+
   } else {
-    text.setAttribute("x", pos);
-    text.setAttribute("y", timeColumn.end - 6);
-    text.setAttribute("text-anchor", "middle");
+
+    const tickLength = isMajor ? majorLength : minorLength;
+
+    tick.setAttribute("y1", timeColumn.end - tickLength);
+    tick.setAttribute("y2", timeColumn.end);
+    tick.setAttribute("x1", pos);
+    tick.setAttribute("x2", pos);
+
   }
 
-  text.setAttribute("font-size", "10");
-  text.textContent = age.toFixed(0) + " Ma";
+  tick.setAttribute("stroke", "black");
+  tick.setAttribute("stroke-width", 1);
 
-  zoomLayer.node().appendChild(text);
+  backgroundLayer.node().appendChild(tick);
+
+  // Label only major ticks
+  if (isMajor) {
+
+    const label = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "text"
+    );
+
+    if (orientation === "vertical") {
+      label.setAttribute("x", timeColumn.end - majorLength - 4);
+      label.setAttribute("y", pos + 4);
+      label.setAttribute("text-anchor", "end");
+    } else {
+      label.setAttribute("x", pos);
+      label.setAttribute("y", timeColumn.end - majorLength - 4);
+      label.setAttribute("text-anchor", "middle");
+    }
+
+    label.setAttribute("font-size", "10");
+    label.textContent = age.toFixed(0) + " Ma";
+
+    backgroundLayer.node().appendChild(label);
+  }
+
 });
-    // ===== BLOCKS =====
-    visibleLevels.forEach(level => {
 
-      const levelUnits = allUnits
-        .filter(u => u.levelOrder === level)
-        .filter(u => u.start !== null)
-        .map(u => ({
-          ...u,
-          end: u.end === null ? 0 : u.end
-        }));
+// ===== BLOCKS =====
 
-      renderBlocks({
-        svg: zoomLayer.node(),
-        levelUnits,
-        allUnits,
-        scale,
-        orientation,
-        level,
-        visibleLevels,
-        columnWidths,
-        axisColumnWidth: timeColumn.end
-      });
+const unitMap = Object.fromEntries(allUnits.map(u => [u.id, u]));
 
+let resolvedBlocks = [];
+
+visibleLevels.forEach(level => {
+
+  const currentIndex = visibleLevels.indexOf(level);
+  if (currentIndex === -1) return;
+
+  const levelUnits = allUnits
+    .filter(u => u.levelOrder === level)
+    .filter(u => u.start !== null)
+    .map(u => ({
+      ...u,
+      end: u.end === null ? 0 : u.end
+    }));
+
+  levelUnits.forEach(unit => {
+
+    let spanStartIndex = currentIndex;
+    let spanEndIndex = currentIndex;
+
+    // ---- Upward span ----
+    let parentId = unit.parent;
+    let hasVisibleParent = false;
+
+    while (parentId) {
+      const parent = unitMap[parentId];
+      if (parent && visibleLevels.includes(parent.levelOrder)) {
+        hasVisibleParent = true;
+        break;
+      }
+      parentId = parent?.parent;
+    }
+
+    if (!hasVisibleParent) spanStartIndex = 0;
+
+    // ---- Downward span ----
+    for (let i = currentIndex + 1; i < visibleLevels.length; i++) {
+
+      const nextLevel = visibleLevels[i];
+
+      const hasChildAtLevel = allUnits.some(u =>
+        u.parent === unit.id &&
+        u.levelOrder === nextLevel
+      );
+
+      if (hasChildAtLevel) {
+        spanEndIndex = i - 1;
+        break;
+      }
+
+      spanEndIndex = i;
+    }
+
+    // ===== Horizontal geometry from layout =====
+
+    const spanColumns = layout
+      .filter(col =>
+        col.id !== "time" &&
+        visibleLevels.indexOf(col.id) >= spanStartIndex &&
+        visibleLevels.indexOf(col.id) <= spanEndIndex
+      );
+
+    if (spanColumns.length === 0) return;
+
+    const x = spanColumns[0].start;
+    const width =
+      spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
+
+    // ===== Vertical geometry from scale =====
+
+    const pos1 = scale(unit.start);
+    const pos2 = scale(unit.end);
+
+    const y = orientation === "vertical"
+      ? Math.min(pos1, pos2)
+      : x;
+
+    const height = orientation === "vertical"
+      ? Math.abs(pos2 - pos1)
+      : width;
+
+    const blockWidth = orientation === "vertical"
+      ? width
+      : Math.abs(pos2 - pos1);
+
+    const blockHeight = orientation === "vertical"
+      ? Math.abs(pos2 - pos1)
+      : width;
+
+    resolvedBlocks.push({
+      x: orientation === "vertical" ? x : Math.min(pos1, pos2),
+      y: orientation === "vertical" ? y : x,
+      width: blockWidth,
+      height: blockHeight,
+      fill: unit.icsColor || "#ccc",
+      label: unit.displayName,
+      labelX: orientation === "vertical"
+        ? x + width / 2
+        : Math.min(pos1, pos2) + Math.abs(pos2 - pos1) / 2,
+      labelY: orientation === "vertical"
+        ? y + Math.abs(pos2 - pos1) / 2
+        : x + width / 2
     });
+
+  });
+
+});
+
+renderBlocks({
+  svg: blockLayer.node(),
+  blocks: resolvedBlocks,
+  orientation
+});
+
+// ===== PICKS =====
+
+const picksColumn = layout.find(col => col.id === "picks");
+
+if (picksColumn && boundaryAges.length) {
+  renderPicks({
+    svg: picksLayer.node(),
+    column: picksColumn,
+    boundaryAges,
+    scale,
+    orientation,
+    width,
+    height
+  });
+}
 
     const zoom = d3.zoom()
       .scaleExtent([0.1, 100])
@@ -189,7 +429,7 @@ scale.ticks(12).forEach(age => {
 
     svg.call(zoom);
 
-  }, [orientation, columnConfig, columnWidths, currentTransform]);
+  }, [orientation, columnConfig, columnWidths, currentTransform, picksMode, manualPicksLevel]);
 
   return (
     <div style={{
@@ -197,7 +437,8 @@ scale.ticks(12).forEach(age => {
       height: "100vh",
       display: "flex",
       flexDirection: "column",
-      position: "relative"
+      position: "relative",
+      background: "white"
     }}>
 
       {/* Ribbon Tabs */}
@@ -206,7 +447,7 @@ scale.ticks(12).forEach(age => {
         borderBottom: "1px solid #ccc",
         background: "#f0f0f0"
       }}>
-        {["Layout", "Display", "Data", "Export"].map(tab => (
+        {["Layout", "Picks","Display", "Data", "Export"].map(tab => (
           <div
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -254,6 +495,56 @@ scale.ticks(12).forEach(age => {
             ))}
           </div>
         )}
+
+        {activeTab === "Picks" && (
+  <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
+
+    <div>
+      <strong>Boundary Mode:</strong>
+    </div>
+
+    <label>
+      <input
+        type="radio"
+        name="picksMode"
+        value="auto"
+        checked={picksMode === "auto"}
+        onChange={() => setPicksMode("auto")}
+      />
+      Auto (Deepest Visible Coverage)
+    </label>
+
+    <label>
+      <input
+        type="radio"
+        name="picksMode"
+        value="manual"
+        checked={picksMode === "manual"}
+        onChange={() => setPicksMode("manual")}
+      />
+      Manual
+    </label>
+
+    {picksMode === "manual" && (
+      <select
+        value={manualPicksLevel ?? ""}
+        onChange={(e) =>
+          setManualPicksLevel(
+            e.target.value === "" ? null : Number(e.target.value)
+          )
+        }
+      >
+        <option value="">Select Level</option>
+        {columnConfig.map(col => (
+          <option key={col.level} value={col.level}>
+            {col.label}
+          </option>
+        ))}
+      </select>
+    )}
+
+  </div>
+)}
       </div>
 
       {/* Visualization Area */}
@@ -263,61 +554,101 @@ scale.ticks(12).forEach(age => {
           ref={svgRef}
           width="100%"
           height="100%"
-          style={{ background: "#f5f5f5", cursor: "grab" }}
+          style={{ background: "white", cursor: "grab" }}
         />
 
         {/* Resize Handles */}
         {layout.map(col => {
 
-          const k = currentTransform.k || 1;
-          const tx = currentTransform.x || 0;
+  const k = currentTransform.k || 1;
+  const tx = currentTransform.x || 0;
+  const ty = currentTransform.y || 0;
 
-          if (orientation === "vertical") {
+  if (orientation === "vertical") {
 
-            const handleX = (col.end * k) + tx;
+    const handleX = (col.end * k) + tx;
 
-            return (
-              <div
-                key={col.id}
-                style={{
-                  position: "absolute",
-                  left: handleX - 3,
-                  top: 0,
-                  width: 6,
-                  height: "100%",
-                  cursor: "ew-resize",
-                  zIndex: 15
-                }}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  const startX = e.clientX;
-                  const startWidth = col.width;
+    return (
+      <div
+        key={col.id}
+        style={{
+          position: "absolute",
+          left: handleX - 3,
+          top: 0,
+          width: 6,
+          height: "100%",
+          cursor: "ew-resize",
+          zIndex: 15
+        }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          const startX = e.clientX;
+          const startWidth = col.width;
 
-                  const onMouseMove = (moveEvent) => {
-                    const delta = (moveEvent.clientX - startX) / k;
-                    const newWidth = Math.max(20, startWidth + delta);
+          const onMouseMove = (moveEvent) => {
+            const delta = (moveEvent.clientX - startX) / k;
+            const newWidth = Math.max(20, startWidth + delta);
 
-                    setColumnWidths(prev => ({
-                      ...prev,
-                      [col.id]: newWidth
-                    }));
-                  };
+            setColumnWidths(prev => ({
+              ...prev,
+              [col.id]: newWidth
+            }));
+          };
 
-                  const onMouseUp = () => {
-                    window.removeEventListener("mousemove", onMouseMove);
-                    window.removeEventListener("mouseup", onMouseUp);
-                  };
+          const onMouseUp = () => {
+            window.removeEventListener("mousemove", onMouseMove);
+            window.removeEventListener("mouseup", onMouseUp);
+          };
 
-                  window.addEventListener("mousemove", onMouseMove);
-                  window.addEventListener("mouseup", onMouseUp);
-                }}
-              />
-            );
+          window.addEventListener("mousemove", onMouseMove);
+          window.addEventListener("mouseup", onMouseUp);
+        }}
+      />
+    );
+  }
 
-          }
+  // ✅ Horizontal orientation
+  const handleY = (col.end * k) + ty;
 
-          return null;
-        })}
+  return (
+    <div
+      key={col.id}
+      style={{
+        position: "absolute",
+        top: handleY - 3,
+        left: 0,
+        height: 6,
+        width: "100%",
+        cursor: "ns-resize",
+        zIndex: 15
+      }}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startHeight = col.width; // same width value reused
+
+        const onMouseMove = (moveEvent) => {
+          const delta = (moveEvent.clientY - startY) / k;
+          const newHeight = Math.max(20, startHeight + delta);
+
+          setColumnWidths(prev => ({
+            ...prev,
+            [col.id]: newHeight
+          }));
+        };
+
+        const onMouseUp = () => {
+          window.removeEventListener("mousemove", onMouseMove);
+          window.removeEventListener("mouseup", onMouseUp);
+        };
+
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+      }}
+    />
+  );
+
+})}
 
       </div>
     </div>
