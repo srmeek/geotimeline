@@ -395,7 +395,7 @@ function App() {
 
       if (zoomMode === "transform") {
         const k = transformRef.current.k || 1;
-        const newTx = (svgEl.clientWidth - MARGIN) - scrollLeft * k;
+        const newTx = MARGIN - scrollLeft;
         const newTransform = d3.zoomIdentity
           .translate(newTx, transformRef.current.y || 0)
           .scale(k);
@@ -410,8 +410,10 @@ function App() {
       } else {
         const fullSpan = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
         const visibleSpan = visibleDomainRef.current[1] - visibleDomainRef.current[0];
+        // In horizontal mode the oldest content is on the LEFT (scrollLeft=0).
+        // scrollLeft increasing → scroll right → view younger content → domain[0] decreases.
         const fraction = scrollLeft / scrollRange;
-        const newMin = dynamicMinAgeRef.current + fraction * (fullSpan - visibleSpan);
+        const newMin = dynamicMaxAgeRef.current - visibleSpan - fraction * (fullSpan - visibleSpan);
         const newMax = newMin + visibleSpan;
         isScrollSyncing.current = true;
         visibleDomainRef.current = [newMin, newMax];
@@ -557,7 +559,8 @@ function App() {
         const fullSpan = dynamicMaxAge - dynamicMinAge;
         const visibleSpan = Math.max(0.001, visibleDomain[1] - visibleDomain[0]);
         if (fullSpan <= visibleSpan) return;
-        const fraction = (visibleDomain[0] - dynamicMinAge) / (fullSpan - visibleSpan);
+        // In horizontal mode oldest is on the LEFT (scrollLeft=0). Invert the fraction.
+        const fraction = 1 - (visibleDomain[0] - dynamicMinAge) / (fullSpan - visibleSpan);
         scrollLeft = Math.max(0, Math.min(scrollRange, fraction * scrollRange));
       }
       isScrollSyncing.current = true;
@@ -844,29 +847,29 @@ visibleLevels.forEach(level => {
 
     if (spanColumns.length === 0) return;
 
-    const x = spanColumns[0].start;
-    const width =
+    const colBandStart = spanColumns[0].start;
+    const colBandWidth =
       spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
 
-    const labelColStart = x;
-    const labelColWidth = width;
+    const labelColStart = colBandStart;
+    const labelColWidth = colBandWidth;
 
     // ===== Vertical geometry from scale =====
 
     const pos1 = scale(unit.start);
     const pos2 = scale(unit.end);
 
-    const y = orientation === "vertical"
+    const blockY = orientation === "vertical"
       ? Math.min(pos1, pos2)
-      : x;
+      : colBandStart;
 
     const blockWidth = orientation === "vertical"
-      ? width
+      ? colBandWidth
       : Math.abs(pos2 - pos1);
 
     const blockHeight = orientation === "vertical"
       ? Math.abs(pos2 - pos1)
-      : width;
+      : colBandWidth;
 
     // Skip blocks entirely outside the viewport — prevents SVG coordinate
     // overflow issues at extreme zoom levels.
@@ -877,8 +880,8 @@ visibleLevels.forEach(level => {
     }
 
     resolvedBlocks.push({
-      x: orientation === "vertical" ? x : Math.min(pos1, pos2),
-      y: orientation === "vertical" ? y : x,
+      x: orientation === "vertical" ? colBandStart : Math.min(pos1, pos2),
+      y: blockY,
       width: blockWidth,
       height: blockHeight,
       fill: unit.icsColor || "#ccc",
@@ -893,7 +896,7 @@ visibleLevels.forEach(level => {
         ? labelColStart + labelColWidth / 2
         : Math.min(pos1, pos2) + Math.abs(pos2 - pos1) / 2,
       labelY: orientation === "vertical"
-        ? y + Math.abs(pos2 - pos1) / 2
+        ? blockY + Math.abs(pos2 - pos1) / 2
         : labelColStart + labelColWidth / 2
     });
 
