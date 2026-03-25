@@ -1,330 +1,287 @@
-# Time Scale Generator --- PROJECT_STATE.md
+# PROJECT_STATE.md
+
+*Last Updated: 2026-03-24*
 
 ------------------------------------------------------------------------
 
-# 1. Project Overview
+# Current State Summary
 
-The Time Scale Generator is a D3-based React application for rendering
-geologic time scales using a canonical time grid and a fully
-layout-driven column engine.
-
-The system supports:
-
--   Vertical and horizontal orientations
--   A single canonical linear age scale
--   Multiple hierarchical time-unit columns (Period, Epoch, etc.)
--   A dedicated Time column (visual representation of the grid)
--   Fully resizable columns
--   Layout-driven geometry
--   Transform-based zoom (temporary model)
--   Git-based architectural checkpointing
-
-The system is no longer structured as a traditional D3 chart.\
-It is a **time-based layout engine with pluggable columns**.
+Major architectural expansion since the Feb 25 stable baseline. The
+single-`useEffect` rendering pipeline remains intact. On top of it we
+have added dual zoom modes, four time scale types, a data editor
+sidebar, a filter tree, display settings, and a scroll-sync layer.
 
 ------------------------------------------------------------------------
 
-# 2. Core Architectural Principles
+# Architecture Overview
 
-## 2.1 Canonical Time Scale (Structural Backbone)
+## Rendering Pipeline
 
-There is exactly **one authoritative D3 scale**:
+-   Single `useEffect` owns all SVG construction (clear → rebuild).
+-   Second `useEffect` owns zoom/pan event binding, tears down cleanly.
+-   Third `useEffect` re-applies counter-scale after each render
+    (transform mode only).
+-   Two more `useEffect`s manage scrollbar ↔ zoom state sync.
+-   `buildScale()` is a pure function called inside the render effect —
+    returns one of four scale implementations.
+-   `computeLayout()` accepts an `initialOffset` parameter so columns
+    start after the `MARGIN` header zone.
+-   Layered SVG groups: `backgroundLayer` → `blockLayer` → `picksLayer`.
 
-    d3.scaleLinear()
+## Data Layer
 
-### Properties
-
--   Domain: \[ICS_MIN_AGE, ICS_MAX_AGE\]
--   Derived from geologicTime.json
--   No hardcoded age constants
--   Orientation-aware range:
-    -   Vertical → \[0, height\]
-    -   Horizontal → \[width, 0\]
--   Shared across all renderers
--   Never recreated per column
--   Never duplicated
-
-This scale is invisible and structural.\
-All vertical (or primary-axis) geometry must come from it.
-
-------------------------------------------------------------------------
-
-## 2.2 Orientation Model
-
-Supported orientations:
-
--   "vertical"
--   "horizontal"
-
-Orientation affects:
-
--   Primary time direction
--   Scale range mapping
--   Coordinate interpretation inside renderers
-
-Orientation does NOT affect:
-
--   Domain
--   Geological boundaries
--   Layout structure
--   Column ordering
-
-Time always flows through the canonical scale.
+-   `ALL_UNITS` and `UNIT_MAP` are module-level constants (built once,
+    not re-derived on every render).
+-   `effectiveUnits` = `ALL_UNITS` with `unitEdits` overlaid — used
+    everywhere instead of raw data.
+-   `isUnitVisible(unitId, hiddenUnits)` walks the ancestor chain so
+    hiding a parent implicitly hides children.
+-   `dynamicMinAge` / `dynamicMaxAge` are derived from currently visible
+    units, not hardcoded ICS bounds.
 
 ------------------------------------------------------------------------
 
-## 2.3 Layout-Driven Architecture
+# Feature Status
 
-All horizontal geometry is owned by:
+## ✅ Dual Zoom Modes
 
-    computeLayout(columns, columnWidths)
+### Transform Mode (default)
+-   D3 `zoom` applies a matrix transform to `zoomLayer <g>`.
+-   Counter-scale keeps text and strokes constant screen size.
+-   Ctrl+wheel or drag to pan/zoom.
+-   `transformRef` keeps latest transform without triggering re-render.
 
-### Layout Responsibilities
+### Dynamic Mode
+-   No matrix transform — `visibleDomain` state drives `buildScale()`
+    on every render.
+-   Wheel zoom updates `visibleDomain` and resets D3 internal transform
+    to identity after each event.
+-   Mouse drag pans axially (clamps to data extent, preserves span) and
+    laterally (`lateralOffset` state + ref).
+-   Switching modes converts between transform↔domain representations
+    so the view position is preserved.
 
--   Column ordering
--   Column widths
--   X positioning
--   Layout stacking
--   Resize handle positioning
+## ✅ Time Scale Types (`buildScale()`)
 
-### Layout Output
+-   **Linear** — standard `d3.scaleLinear`.
+-   **Log** — `ln(age+1)` mapped through a linear scale; has `.ticks()`
+    returning geologically sensible candidates.
+-   **Equal Size** — each unit at `equalSizeLevel` gets equal pixel
+    height, regardless of time span. Configurable level via dropdown.
+-   **Era Equal** — four hard-coded eras (Cenozoic / Mesozoic /
+    Paleozoic / Precambrian) each get one quarter of the height.
 
-Each column receives:
+## ✅ Scrollbar Sync
 
-    {
-      x,
-      y,
-      width,
-      height,
-      column
-    }
+-   A `scrollContainerRef` div wraps the SVG with `overflow: scroll`.
+-   A spacer div inside it sets the scrollable extent (`scrollableSize`
+    state — computed from zoom level / visible domain span × viewport).
+-   SVG + headers + resize handles are pinned `position: sticky` inside
+    the spacer so they stay viewport-fixed while the scrollbar thumb is
+    draggable.
+-   Scroll events update zoom state; zoom state updates scroll position
+    — protected by `isScrollSyncing` ref to prevent loops.
 
-Renderers must not compute horizontal offsets.
+## ✅ Column Headers
 
-------------------------------------------------------------------------
+-   Div-based sticky header bar (40px = `MARGIN`) at top (vertical) or
+    left (horizontal).
+-   Positioned using `col.start * k + tx` to track zoom and lateral pan.
+-   Auto-hides overflow text.
 
-## 2.4 Separation of Concerns
+## ✅ Resize Handles
 
-### Layout Layer
+-   DOM `<div>` elements (not SVG) overlaid on the sticky wrapper.
+-   Delta divided by zoom scale factor `k` so dragging feels linear at
+    all zoom levels.
+-   Double-click calls `autoFitColumnWidth()` — uses a canvas 2D
+    context to measure the widest text at the current font, then adds
+    padding.
 
--   Owns all horizontal positioning
--   Owns stacking order
--   Owns column width model
--   No time logic
+## ✅ Time Column
 
-### Renderer Layer
+-   Major/minor tick system.
+-   Tick labels formatted via `formatTickLabel()` respecting Ga/Ma/ka
+    unit selection and appropriate decimal places.
+-   Background rect + ticks rendered into `backgroundLayer`.
 
--   Draw only inside assigned rectangle
--   Use provided canonical scale
--   Respect orientation
--   No layout math
--   No global positioning
--   No manual offsets
--   No hardcoded geological constants
+## ⚠️ Picks Column — Active Bugs (next session)
 
-------------------------------------------------------------------------
+-   Auto mode: deepest visible level with coverage.
+-   Manual mode: ceiling level with fallback to shallower levels.
+-   Present-day boundary (0 Ma) always included.
+-   `boundaryAges` is now `[{age, uncertainty}]` — PicksRenderer
+    destructures `{ age, uncertainty }` on each entry.
+-   Uncertainty text appended to label as ` ±value` when
+    `showUncertainty` is true and uncertainty is non-null.
+-   Default sigFigs changed from 3 → 4.
+-   `formatAge` now strips trailing zeros via
+    `String(parseFloat(toFixed(...)))`.
 
-# 3. Column Model
+**BUG 1 — Rounding is incorrect.**
+Something is wrong with how ages are being rounded/displayed. Not yet
+diagnosed. Likely candidates: `parseFloat` floating-point edge cases,
+`toFixed` rounding behaviour, or the sigFigs formula interacting badly
+with certain magnitude values.
 
-Columns are declared declaratively:
+**BUG 2 — Font size changes when sigFigs is changed.**
+Changing the significant figures dropdown causes an unexpected change in
+the rendered font size inside the picks column. Likely cause: the
+counter-scale `useEffect` (which adjusts `font-size` on all `[data-base-font-size]`
+elements after each render) is running and applying an incorrect scale
+factor. The render effect re-fires when `picksSigFigs` changes (it's in
+the dependency array), rebuilds the SVG, then the counter-scale effect
+re-applies — worth checking whether the `k` value and `data-base-font-size`
+attributes are being set and re-read correctly after the rebuild.
 
-    const columns = [
-      { id: "time", type: "time" },
-      ...hierarchyColumns
-    ];
+## ✅ Filter Tab
 
-Each column:
+-   Recursive tree of all non-Stage units with checkboxes.
+-   Expand/collapse per node (▸/▾).
+-   Ancestor-hidden nodes shown at 0.4 opacity and disabled.
+-   "Show All" reset button.
+-   Hiding units resets zoom to identity / full domain.
 
--   Is first-class
--   Is resizable
--   Has width defined in columnWidths
--   Receives geometry from layout
--   Is rendered by type
+## ✅ Data Editor Sidebar (Data Tab)
 
-------------------------------------------------------------------------
+-   Toggle open/close from ribbon.
+-   700px sidebar with scrollable table.
+-   Columns: Name, Full Name, Rank, Start (Ma), End (Ma), Parent, Color.
+-   Search by name/id; filter by rank; sortable columns (click header).
+-   Inline cell editing: click → text input → Enter/Tab/Blur to commit,
+    Escape to cancel.
+-   Color column uses `<input type="color">` picker.
+-   Edited cells highlighted yellow; edited rows highlighted.
+-   "Reset All Edits" button with count shown in ribbon.
+-   Edits stored in `unitEdits` state — session only, no persistence.
 
-## 3.1 Current Column Types
+## ✅ Display Tab
 
-### "time"
+-   Font size slider (6–16px).
+-   Font family picker (Arial, Times New Roman, Courier New, Georgia,
+    Verdana).
+-   Label orientation: horizontal / vertical (rotated -90°).
+-   Scale type selector; "Equal Size" shows level dropdown.
 
-Visual representation of the canonical time grid.
+## ✅ View Tab
 
-Responsibilities:
+-   Orientation toggle (vertical / horizontal).
+-   Zoom mode radio (Transform / Dynamic).
+-   Reset Zoom button.
+-   Time unit radio (Ga / Ma / ka).
 
--   Render tick labels (Ma)
--   Render background + border
--   Respect orientation
--   Use canonical scale
+## ✅ Columns Tab
 
-The Time column does NOT own the scale.
+-   Checkboxes to show/hide hierarchy columns (Super-Eon → Stage).
 
-------------------------------------------------------------------------
+## ⚠️ Export Tab
 
-### "block"
-
-Hierarchical time-unit columns (Period, Epoch, etc.).
-
-Responsibilities:
-
--   Render rectangles using scale(start/end)
--   Render labels
--   Respect orientation
--   Fully layout-driven horizontally
-
-Blocks snap entirely to canonical time grid.
-
-------------------------------------------------------------------------
-
-# 4. Resize System
-
-All columns are resizable.
-
--   Resize handles derived from layout
--   Updating a width updates columnWidths
--   No special-case columns
--   No fixed-width assumptions
-
-Architectural rule:
-
-Every column added in the future must be resizable.
-
-------------------------------------------------------------------------
-
-# 5. Rendering Order (Layering Rules)
-
-Rendering stack must remain:
-
-1.  Background
-2.  Hierarchy block columns
-3.  Time column elements (ticks/labels)
-4.  Future auxiliary columns (e.g., Picks)
-5.  Headers (future)
-
-Z-order must be centrally controlled.
-
-------------------------------------------------------------------------
-
-# 6. Zoom Model (Current State)
-
-Current implementation:
-
-    zoomLayer.attr("transform", event.transform);
-
-This is transform-based zoom.
-
-Effects:
-
--   Geometry scales visually
--   Domain does not change
--   Text scales visually
-
-Planned future:
-
--   Domain-based zoom
--   Text remains constant size
--   Canonical scale domain mutates
-
-Transform-based zoom is temporary and must not be relied upon
-structurally.
+-   Placeholder only — no functionality implemented.
 
 ------------------------------------------------------------------------
 
-# 7. System Invariants (Must Not Be Broken)
+# Known Issues / Uncertain Behaviour
 
-These are architectural constraints:
+1.  **Scroll sync math in transform mode** — the `scrollTop ↔ ty`
+    conversion formula is non-trivial and may be imperfect at extreme
+    zoom levels or after lateral pan.
 
-1.  There is exactly ONE canonical scale.
-2.  Vertical geometry always comes from scale.
-3.  Horizontal geometry always comes from computeLayout.
-4.  No column computes horizontal offsets manually.
-5.  No hardcoded geological boundaries.
-6.  No hardcoded age limits.
-7.  All columns are resizable.
-8.  Time grid is invisible and structural.
-9.  Orientation affects coordinate interpretation only.
+2.  **Counter-scale in dynamic mode** — text and stroke counter-scale is
+    applied by the separate `useEffect` after each render, but dynamic
+    mode doesn't use a matrix transform so font sizes are always 1:1
+    (never shrink with zoom). This is correct behaviour for dynamic mode
+    but worth confirming is intentional.
 
-Any violation of these is architectural regression.
+3.  **equalSize scale + hidden units** — `buildScale("equalSize")` uses
+    `allUnits` (which is `effectiveUnits` = full dataset), not the
+    filtered-visible subset. Hiding units may not affect the slot
+    distribution as expected.
 
-------------------------------------------------------------------------
+4.  **Data editor edits are session-only** — `unitEdits` lives in React
+    state. Refreshing the page loses all edits. No import/export of
+    edits.
 
-# 8. Next Planned Feature: Picks Column
+5.  **Lateral offset resets on mode switch** — switching zoom mode
+    resets lateral offset to 0. If the user has scrolled the chart
+    sideways in dynamic mode, that position is lost.
 
-Target structure:
-
-    [ Time ]
-    [ Hierarchy Columns ]
-    [ Picks ]
-
-Requirements:
-
--   Fully layout-driven
--   Resizable
--   Driven by highest visible hierarchy level
--   Snaps to canonical scale
--   Renders boundary ticks, numeric labels, optional grid lines
--   No layout hacks
--   No hardcoding
--   No independent scale
+6.  **`dynamicMaxAge` / `dynamicMinAge` flicker** — these are derived
+    from `effectiveUnits` filtered by `hiddenUnits`. If the user hides
+    all units at the oldest extent, the scale domain shrinks, and the
+    `useEffect` resets zoom. This is expected but may surprise users.
 
 ------------------------------------------------------------------------
 
-# 9. Future Architectural Roadmap (Ordered)
+# Known Data Considerations
 
-1.  Add Picks column
-2.  Make Picks dynamic to highest visible hierarchy
-3.  Add grid line extension from Picks
-4.  Refine Time column tick density
-5.  Convert zoom to domain-based model
-6.  Add clipping for text overflow
-7.  Introduce column header row system
-8.  Add pluggable data column system
-9.  Introduce value axes for data columns
-
-------------------------------------------------------------------------
-
-# 10. Long-Term Vision
-
-The Time Scale Generator is evolving into:
-
-A time-based layout engine with pluggable, resizable columns driven by a
-canonical geologic time grid.
-
-It is not a static chart.
-
-All future features must respect:
-
--   Canonical time authority
--   Layout ownership of horizontal space
--   Renderer isolation
--   Orientation symmetry
--   Git-based stability checkpoints
+-   Data file is based on the **ICS 2024/12 chart** — current as of
+    project start.
+-   **Unnamed placeholder units** exist in the Cambrian (Stages 2, 3, 4,
+    10) and Quaternary (Upper Pleistocene). The renderer must handle null
+    or missing `displayName` without errors.
+-   **Subseries/Subepoch** rank is formally ratified in the Quaternary
+    and Neogene but is not yet represented in the level 0–6 column
+    system. A level may need to be added to accommodate it correctly.
+-   **ICS color standards** should be verified against the current 2024/12
+    chart before display or export features are finalized.
+-   A **machine-readable API data source** exists at
+    stratigraphy.org/chartdata and should be evaluated when live data
+    updating becomes a priority.
 
 ------------------------------------------------------------------------
 
-# 11. Current Stability Status
+# Architecture Lessons (Carry Forward)
 
-Stable:
-
--   Canonical time scale
--   Layout-driven horizontal geometry
--   Time column
--   Block rendering alignment
--   Resizable columns
--   Orientation toggle
--   Git reversion process
-
-In Progress:
-
--   Column header system
--   Domain-based zoom migration
-
-Not Started:
-
--   Picks column
--   Data columns
--   User-uploaded datasets
--   Interactive grid toggling
+1.  Rendering pipeline must remain single-source-of-truth.
+2.  Zoom mode switching must convert state representations — not reset.
+3.  Resize handles must not trigger SVG teardown (they are DOM divs now).
+4.  DOM resize handles divide delta by `k` — essential at non-1 zoom.
+5.  `isScrollSyncing` ref prevents scroll↔zoom feedback loops.
+6.  `transformRef` / `visibleDomainRef` / `lateralOffsetRef` hold latest
+    values for closures without causing stale-closure bugs.
+7.  Structural changes must be introduced in minimal deltas.
 
 ------------------------------------------------------------------------
 
-End of Document.
+# Next Session Plan
+
+## Priority 1 — Export Tab
+-   SVG download (current view as-is).
+-   PNG rasterisation option.
+-   Consider whether to export the full timeline or the current viewport
+    only.
+
+## Priority 2 — Data Editor Persistence
+-   JSON export/import of `unitEdits`.
+-   Or: persist to `localStorage` automatically.
+
+## Priority 3 — Scroll Sync Audit
+-   Verify scroll ↔ zoom math is correct in both modes at edge cases
+    (extreme zoom, near-zero visible domain, horizontal orientation).
+
+## Priority 4 — Dynamic Mode Counter-Scale
+-   Decide whether dynamic mode should also keep text/strokes at
+    constant screen size (requires scaling font sizes and stroke widths
+    by `fullSpan / visSpan` factor).
+
+## Priority 5 — equalSize + Hidden Units
+-   Pass visible-only units to `buildScale("equalSize")` so hidden units
+    are excluded from slot allocation.
+
+------------------------------------------------------------------------
+
+# Startup Prompt For Next Session
+
+Paste this at the start of the next chat:
+
+------------------------------------------------------------------------
+
+"Resume from current working state (2026-03-24). Single-useEffect
+rendering pipeline intact. Dual zoom modes (transform / dynamic) both
+working. Four scale types (linear, log, equalSize, eraEqual) implemented.
+Data editor sidebar functional. Filter tree with hide/show working.
+Scroll sync layer in place. Export tab is an empty placeholder — that
+is the next thing to implement. Maintain architecture and avoid
+splitting the render useEffect."
+
+------------------------------------------------------------------------

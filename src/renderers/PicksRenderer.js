@@ -1,137 +1,110 @@
+function formatAge(age, sigFigs) {
+  if (age === 0) return "0";
+  // Add small epsilon before floor to prevent log10 floating-point underflow
+  // (e.g. Math.log10(1000) = 2.9999... in some engines → would floor to 2)
+  const magnitude = Math.floor(Math.log10(Math.abs(age)) + 1e-10);
+  // decimals floors at 0: never coarser than 1 Ma (integer) precision
+  const decimals = Math.max(0, sigFigs - 1 - magnitude);
+  // parseFloat strips trailing zeros (e.g. "23.00" → "23", "1.800" → "1.8")
+  return String(parseFloat(age.toFixed(decimals)));
+}
+
 export function renderPicks({
   svg,
   column,
-  boundaryAges,
+  boundaryAges,   // [{age, uncertainty}]
   scale,
   orientation,
   width,
-  height
+  height,
+  margin = 0,
+  showUncertainty = false,
+  picksSigFigs = 3
 }) {
+  // ===== Right border only =====
 
-  // ===== Background (no full border) =====
+  const border2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
 
-const background = document.createElementNS(
-  "http://www.w3.org/2000/svg",
-  "rect"
-);
+  if (orientation === "vertical") {
+    border2.setAttribute("x1", column.end);
+    border2.setAttribute("x2", column.end);
+    border2.setAttribute("y1", margin);
+    border2.setAttribute("y2", height - margin);
+  } else {
+    border2.setAttribute("y1", column.end);
+    border2.setAttribute("y2", column.end);
+    border2.setAttribute("x1", margin);
+    border2.setAttribute("x2", width - margin);
+  }
 
-if (orientation === "vertical") {
-  background.setAttribute("x", column.start);
-  background.setAttribute("y", 0);
-  background.setAttribute("width", column.width);
-  background.setAttribute("height", height);
-} else {
-  background.setAttribute("x", 0);
-  background.setAttribute("y", column.start);
-  background.setAttribute("width", width);
-  background.setAttribute("height", column.width);
-}
+  border2.setAttribute("stroke", "black");
+  border2.setAttribute("stroke-width", "0.5");
+  border2.setAttribute("data-base-stroke", "0.5");
 
-background.setAttribute("fill", "white");
-background.setAttribute("stroke", "none");
+  svg.appendChild(border2);
 
-svg.appendChild(background);
-
-// Draw vertical borders only (or horizontal in horizontal mode)
-
-const border1 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-const border2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-
-if (orientation === "vertical") {
-
-  border1.setAttribute("x1", column.start);
-  border1.setAttribute("x2", column.start);
-  border1.setAttribute("y1", 0);
-  border1.setAttribute("y2", height);
-
-  border2.setAttribute("x1", column.end);
-  border2.setAttribute("x2", column.end);
-  border2.setAttribute("y1", 0);
-  border2.setAttribute("y2", height);
-
-} else {
-
-  border1.setAttribute("y1", column.start);
-  border1.setAttribute("y2", column.start);
-  border1.setAttribute("x1", 0);
-  border1.setAttribute("x2", width);
-
-  border2.setAttribute("y1", column.end);
-  border2.setAttribute("y2", column.end);
-  border2.setAttribute("x1", 0);
-  border2.setAttribute("x2", width);
-}
-
-border1.setAttribute("stroke", "black");
-border2.setAttribute("stroke", "black");
-border1.setAttribute("stroke-width", "0.5");
-border2.setAttribute("stroke-width", "0.5");
-
-svg.appendChild(border1);
-svg.appendChild(border2);
   // ===== Boundary Lines + Labels =====
 
-  boundaryAges.forEach(age => {
+  boundaryAges.forEach(({ age, uncertainty }) => {
 
     const pos = scale(age);
 
-// ---- Label ----
-const label = document.createElementNS(
-  "http://www.w3.org/2000/svg",
-  "text"
-);
+    // ---- Label ----
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
 
-label.setAttribute("font-size", "10");
-label.textContent = age.toFixed(0);
+    label.setAttribute("font-size", "10");
+    label.setAttribute("data-base-font-size", "10");
 
-// Estimate text width (~6px per character at 10px font)
-svg.appendChild(label); // temporarily append to measure
+    const ageText = formatAge(age, picksSigFigs);
+    const uncText = (showUncertainty && uncertainty !== null)
+      ? ` \u00B1${uncertainty}`
+      : "";
+    label.textContent = ageText + uncText;
 
-const textWidth = label.getBBox().width;
+    svg.appendChild(label); // temporarily append to measure
+    const textWidth = label.getBBox().width;
+    svg.removeChild(label);
 
-svg.removeChild(label); // remove so we can position properly
+    const labelMargin = 6;
+    const labelPadding = textWidth + 8;
 
-const labelMargin = 6;
-const labelPadding = textWidth + 8; // 8px buffer
+    // ---- Tick ----
+    const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
 
-// ---- Tick ----
-const tick = document.createElementNS(
-  "http://www.w3.org/2000/svg",
-  "line"
-);
+    if (orientation === "vertical") {
 
-if (orientation === "vertical") {
+      const tickEndX = column.end - labelPadding;
 
-  const tickEndX = column.end - labelPadding;
+      tick.setAttribute("x1", column.start);
+      tick.setAttribute("x2", tickEndX);
+      tick.setAttribute("y1", pos);
+      tick.setAttribute("y2", pos);
 
-  tick.setAttribute("x1", column.start);
-  tick.setAttribute("x2", tickEndX);
-  tick.setAttribute("y1", pos);
-  tick.setAttribute("y2", pos);
+      label.setAttribute("x", column.end - labelMargin);
+      label.setAttribute("y", pos);
+      label.setAttribute("dominant-baseline", "middle");
+      label.setAttribute("text-anchor", "end");
 
-  label.setAttribute("x", column.end - labelMargin);
-  label.setAttribute("y", pos + 4);
-  label.setAttribute("text-anchor", "end");
+    } else {
 
-} else {
+      const tickEndY = column.end - labelPadding;
 
-  const tickEndY = column.end - labelPadding;
+      tick.setAttribute("y1", column.start);
+      tick.setAttribute("y2", tickEndY);
+      tick.setAttribute("x1", pos);
+      tick.setAttribute("x2", pos);
 
-  tick.setAttribute("y1", column.start);
-  tick.setAttribute("y2", tickEndY);
-  tick.setAttribute("x1", pos);
-  tick.setAttribute("x2", pos);
+      label.setAttribute("x", pos);
+      label.setAttribute("y", column.end - labelMargin);
+      label.setAttribute("text-anchor", "middle");
+    }
 
-  label.setAttribute("x", pos);
-  label.setAttribute("y", column.end - labelMargin);
-  label.setAttribute("text-anchor", "middle");
-}
+    tick.setAttribute("stroke", "black");
+    tick.setAttribute("stroke-width", 1);
+    tick.setAttribute("data-base-stroke", "1");
 
-tick.setAttribute("stroke", "black");
-tick.setAttribute("stroke-width", 1);
-
-svg.appendChild(tick);
-svg.appendChild(label);
+    svg.appendChild(tick);
+    svg.appendChild(label);
   });
 
 }

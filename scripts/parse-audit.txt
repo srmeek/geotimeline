@@ -1,0 +1,54 @@
+=== ICS Chart Parse Audit ===
+chart.txt units parsed: 178
+geologicTime.json units: 178
+xlabels-en.ttl dual-label units found: 185
+
+─── Field differences for matched units ───
+  Aalenian:
+    displayName: JSON="Zanclean"  chart="Aalenian"
+  CambrianStage10:
+    displayName: JSON="Stage 10"  chart="Cambrian Stage 10"
+  CambrianStage2:
+    displayName: JSON="Stage 2"  chart="Cambrian Stage 2"
+  CambrianStage3:
+    displayName: JSON="Stage 3"  chart="Cambrian Stage 3"
+  CambrianStage4:
+    displayName: JSON="Stage 4"  chart="Cambrian Stage 4"
+  UpperPleistocene:
+    displayName: JSON="Late"  chart="Late Pleistocene"
+  LowerCretaceous:
+    displayName: JSON="Early"  chart="Early Cretaceous"
+  UpperCretaceous:
+    displayName: JSON="Late"  chart="Late Cretaceous"
+
+─── New field coverage in merged output ───
+  total units:                178
+  start age:                  178
+  startUncertainty:           104
+  end age:                    178
+  endUncertainty:             102
+  ratifiedGSSP (true):        130
+  ratifiedGSSA (true):        19
+  shortCode:                  178
+  order:                      178
+  displayNameStratigraphic:   15
+
+─── Units with dual labels (timescale / stratigraphic) ───
+  UpperPleistocene: "Late Pleistocene" / "Upper Pleistocene"
+  UpperCretaceous: "Late Cretaceous" / "Upper Cretaceous"
+  LowerCretaceous: "Early Cretaceous" / "Lower Cretaceous"
+  UpperJurassic: "Late Jurassic" / "Upper Jurassic"
+  LowerJurassic: "Early Jurassic" / "Lower Jurassic"
+  UpperTriassic: "Late Triassic" / "Upper Triassic"
+  LowerTriassic: "Early Triassic" / "Lower Triassic"
+  UpperPennsylvanian: "Late Pennsylvanian" / "Upper Pennsylvanian"
+  LowerPennsylvanian: "Early Pennsylvanian" / "Lower Pennsylvanian"
+  UpperMississippian: "Late Mississippian" / "Upper Mississippian"
+  LowerMississippian: "Early Mississippian" / "Lower Mississippian"
+  UpperDevonian: "Late Devonian" / "Upper Devonian"
+  LowerDevonian: "Early Devonian" / "Lower Devonian"
+  UpperOrdovician: "Late Ordovician" / "Upper Ordovician"
+  LowerOrdovician: "Early Ordovician" / "Lower Ordovician"
+
+
+✓ Written 178 units to src/data/geologicTime.json
