@@ -105,13 +105,18 @@ export function renderBlocks({
     const screenW = block.width  * currentK;
     const screenH = block.height * currentK;
 
+    // Resolve "auto" → align with the longer axis
+    const resolvedOrient = blockOrient === "auto"
+      ? (screenW >= screenH ? "horizontal" : "vertical")
+      : blockOrient;
+
     // For vertical text the label runs along block.height, so swap fit axes
-    const [fitW, fitH] = blockOrient === "vertical"
+    const [fitW, fitH] = resolvedOrient === "vertical"
       ? [screenH, screenW]
       : [screenW, screenH];
 
     // Vertical orientation: treat whole label as one line (no line-break mid-rotation)
-    const fitWords = blockOrient === "vertical" ? [words.join(" ")] : words;
+    const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
 
     const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, fontFamily, blockFontSize, 5);
 
@@ -127,6 +132,7 @@ export function renderBlocks({
     label.setAttribute("data-label",          labelText);
     label.setAttribute("data-user-font-size", String(blockFontSize));
     label.setAttribute("data-font-family",    fontFamily);
+    // Store "auto" so applyCounterScale can re-resolve per zoom level
     label.setAttribute("data-label-orient",   blockOrient);
 
     label.setAttribute("font-family", fontFamily);
@@ -140,7 +146,7 @@ export function renderBlocks({
 
     if (block.unitId) label.setAttribute("data-unit-id", block.unitId);
 
-    if (blockOrient === "vertical") {
+    if (resolvedOrient === "vertical") {
       label.setAttribute("x", block.labelX);
       label.setAttribute("y", block.labelY);
       label.setAttribute("transform", `rotate(-90, ${block.labelX}, ${block.labelY})`);

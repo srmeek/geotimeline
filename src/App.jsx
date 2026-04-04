@@ -7,7 +7,7 @@ import geologicTime from "./data/geologicTime.json";
 
 const ICS_MIN_AGE = 0;
 const ICS_MAX_AGE = 4567.30;
-const MARGIN = 40; // px of blank space above/below the timeline
+const MARGIN = 14;       // px of blank space above/below the timeline inside the SVG
 
 // ===== Static unit data (adjusted levels, built once) =====
 const ALL_UNITS = geologicTime.units.map(u => {
@@ -204,11 +204,14 @@ function App() {
   const svgRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const isScrollSyncing = useRef(false);
-  const minimapRef = useRef(null);
   const importEditsRef = useRef(null);
+  const effectiveMarginRef = useRef(14);
   const hashDebounceRef = useRef(null);
   const [scrollableSize, setScrollableSize] = useState(800);
-  const [showMinimap, setShowMinimap] = useState(() => _initPrefs.showMinimap ?? true);
+  const [headerHeight, setHeaderHeight] = useState(() => _initPrefs.headerHeight ?? 48);
+  const [headerFontSize, setHeaderFontSize] = useState(() => _initPrefs.headerFontSize ?? 13);
+  // Keep effective top margin in a ref so scroll sync closures always read the latest value
+  effectiveMarginRef.current = headerHeight + 8;
 
   const [activeTab, setActiveTab] = useState("View");
 
@@ -219,8 +222,8 @@ function App() {
     { level: 3, label: "Period",    labelStrat: "System",         visible: true, orientation: null, fontSize: null },
     { level: 4, label: "Subperiod", labelStrat: "Subsystem",      visible: true, orientation: null, fontSize: null },
     { level: 5,   label: "Epoch",    labelStrat: "Series",         visible: true, orientation: null, fontSize: null },
-    { level: 5.5, label: "Subepoch",labelStrat: "Subseries",      visible: true, orientation: null, fontSize: null },
-    { level: 6,   label: "Age",     labelStrat: "Stage",          visible: true, orientation: null, fontSize: null }
+    { level: 5.5, label: "Subepoch",labelStrat: "Subseries",      visible: false, orientation: null, fontSize: null },
+    { level: 6,   label: "Age",     labelStrat: "Stage",          visible: false, orientation: null, fontSize: null }
   ];
   const [columnConfig, setColumnConfig] = useState(() => {
     const saved = _initPrefs.columnConfig;
@@ -251,7 +254,7 @@ function App() {
   const [currentTransform, setCurrentTransform] = useState(_hashTransform);
   const transformRef = useRef(_hashTransform);
 
-  const [zoomMode, setZoomMode] = useState(_initFromHash?.zoomMode ?? "transform"); // "transform" | "dynamic"
+  const [zoomMode, setZoomMode] = useState(_initFromHash?.zoomMode ?? "dynamic"); // "transform" | "dynamic"
   const [visibleDomain, setVisibleDomain] = useState(_initFromHash?.visibleDomain ?? [ICS_MIN_AGE, ICS_MAX_AGE]);
   const visibleDomainRef = useRef(_initFromHash?.visibleDomain ?? [ICS_MIN_AGE, ICS_MAX_AGE]);
   const zoomBehaviorRef = useRef(null);
@@ -300,16 +303,17 @@ function App() {
     if (!svgElement) { setZoomMode(newMode); return; }
     const h = svgElement.clientHeight;
 
+    const eM = effectiveMarginRef.current;
     if (newMode === "transform") {
       // Convert current visibleDomain → equivalent D3 transform
       const [domMin, domMax] = visibleDomainRef.current;
       const fullScale = d3.scaleLinear()
         .domain([dynamicMinAge, dynamicMaxAge])
-        .range([MARGIN, h - MARGIN]);
+        .range([eM, h - eM]);
       const p1 = fullScale(domMin);
       const p2 = fullScale(domMax);
-      const k  = (h - 2 * MARGIN) / (p2 - p1);
-      const ty = MARGIN - p1 * k;
+      const k  = (h - 2 * eM) / (p2 - p1);
+      const ty = eM - p1 * k;
       const newTransform = d3.zoomIdentity.translate(lateralOffsetRef.current, ty).scale(k);
       transformRef.current = newTransform;
       setCurrentTransform(newTransform);
@@ -318,9 +322,9 @@ function App() {
       const { k, y: ty } = transformRef.current;
       const fullScale = d3.scaleLinear()
         .domain([dynamicMinAge, dynamicMaxAge])
-        .range([MARGIN, h - MARGIN]);
-      const newMin = fullScale.invert((MARGIN - ty) / k);
-      const newMax = fullScale.invert((h - MARGIN - ty) / k);
+        .range([eM, h - eM]);
+      const newMin = fullScale.invert((eM - ty) / k);
+      const newMax = fullScale.invert((h - eM - ty) / k);
       const clampedMin = Math.max(dynamicMinAge, Math.min(dynamicMaxAge, newMin));
       const clampedMax = Math.max(dynamicMinAge, Math.min(dynamicMaxAge, newMax));
       if (clampedMin < clampedMax) {
@@ -484,8 +488,8 @@ function App() {
 
     if (zoomMode === "transform") {
       const k = transformRef.current.k || 1;
-      // Anchor: scrollTop=0 → timeline top at screen top; scrollTop=max → timeline bottom at screen bottom
-      const newTy = MARGIN * (1 - k) - scrollTop * (viewH - 2 * MARGIN) / viewH;
+      const eM = effectiveMarginRef.current;
+      const newTy = eM * (1 - k) - scrollTop * (viewH - 2 * eM) / viewH;
       const newTransform = d3.zoomIdentity
         .translate(transformRef.current.x || 0, newTy)
         .scale(k);
@@ -573,17 +577,24 @@ function App() {
 
         const screenW = blockW * k;
         const screenH = blockH * k;
-        const [fitW, fitH] = orient === "vertical" ? [screenH, screenW] : [screenW, screenH];
-        const fitWords = orient === "vertical" ? [words.join(" ")] : words;
+        // Resolve "auto" → align with the longer axis at current zoom
+        const resolvedOrient = orient === "auto"
+          ? (screenW >= screenH ? "horizontal" : "vertical")
+          : orient;
+        const [fitW, fitH] = resolvedOrient === "vertical" ? [screenH, screenW] : [screenW, screenH];
+        const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
 
         const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, ff, userFS, 5);
         el.setAttribute("font-size",           String(fitSize / k));
         el.setAttribute("data-base-font-size", String(fitSize));
 
         const cx = el.getAttribute("x") || "0";
-        if (orient === "vertical") {
+        const cy = el.getAttribute("y") || "0";
+        if (resolvedOrient === "vertical") {
+          el.setAttribute("transform", `rotate(-90, ${cx}, ${cy})`);
           el.textContent = lines[0] || "";
         } else {
+          el.removeAttribute("transform");
           while (el.firstChild) el.removeChild(el.firstChild);
           const lineHZL   = fitSize * 1.2 / k;
           const startDyZL = -(lines.length - 1) / 2 * lineHZL;
@@ -628,7 +639,34 @@ function App() {
   { id: "picks", type: "picks" }
 ];
 
-  const layout = computeLayout(columns, columnWidths, MARGIN);
+  // Auto-expand picks column so labels never clip into adjacent columns
+  const _picksMinWidth = (() => {
+    const mc = document.createElement("canvas");
+    const mctx = mc.getContext("2d");
+    mctx.font = `${fontSize}px ${fontFamily}`;
+    let maxW = 0;
+    const fmt = age => {
+      if (age === 0) return "0";
+      const mag = Math.floor(Math.log10(Math.abs(age)) + 1e-10);
+      return String(parseFloat(age.toFixed(Math.max(0, picksSigFigs - 1 - mag))));
+    };
+    const span = dynamicMaxAge - dynamicMinAge;
+    for (let i = 0; i <= 8; i++) {
+      const age = dynamicMinAge + (span * i) / 8;
+      if (age <= 0) continue;
+      const prefix = showUncertainty ? "\u007E" : "";
+      const w = mctx.measureText(prefix + fmt(age) + (showUncertainty ? " \u00B1999" : "")).width;
+      if (w > maxW) maxW = w;
+    }
+    // rightMargin(4) + tickLabelGap(12) + leftTick(16)
+    return Math.ceil(maxW) + 32;
+  })();
+  const effectiveColumnWidths = {
+    ...columnWidths,
+    picks: Math.max(columnWidths.picks ?? 60, _picksMinWidth),
+  };
+
+  const layout = computeLayout(columns, effectiveColumnWidths, MARGIN);
 
   function autoFitColumnWidth(col) {
     const PAD = 16;
@@ -666,7 +704,7 @@ function App() {
 
   function getColDisplayName(col) {
     if (col.id === "time") return "Time";
-    if (col.id === "picks") return "Picks";
+    if (col.id === "picks") return "Picks (Ma)";
     const cc = columnConfig.find(c => c.level === col.id);
     if (!cc) return String(col.id);
     if (labelMode === "stratigraphic") return cc.labelStrat;
@@ -686,8 +724,9 @@ function App() {
     if (zoomMode === "transform") {
       const k = currentTransform.k || 1;
       const ty = currentTransform.y || 0;
+      const eM = effectiveMarginRef.current;
       scrollTop = Math.max(0, Math.min(scrollRange,
-        (MARGIN * (1 - k) - ty) * viewH / (viewH - 2 * MARGIN)
+        (eM * (1 - k) - ty) * viewH / (viewH - 2 * eM)
       ));
     } else {
       const fullSpan = dynamicMaxAge - dynamicMinAge;
@@ -733,10 +772,11 @@ const scaleUnits = scaleType === "equalSize"
   ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
   : allUnits;
 
+const eM = effectiveMarginRef.current;
 const scale = buildScale(
   scaleType,
   scaleDomain,
-  [MARGIN, height - MARGIN],
+  [eM, height - eM],
   scaleUnits,
   equalSizeLevel
 );
@@ -814,9 +854,9 @@ const timeBackground = document.createElementNS(
 );
 
 timeBackground.setAttribute("x", timeColumn.start);
-timeBackground.setAttribute("y", MARGIN);
+timeBackground.setAttribute("y", eM);
 timeBackground.setAttribute("width", timeColumn.width);
-timeBackground.setAttribute("height", height - 2 * MARGIN);
+timeBackground.setAttribute("height", height - 2 * eM);
 
 timeBackground.setAttribute("fill", "white");
 timeBackground.setAttribute("stroke", "none");
@@ -976,8 +1016,8 @@ visibleLevels.forEach(level => {
     if (Math.min(pos1, pos2) > height || Math.max(pos1, pos2) < 0) return;
 
     const colConf = columnConfig.find(c => c.level === unit.levelOrder);
-    // Default: levels 0-3 → vertical, 4+ → horizontal
-    const blockOrientation = colConf?.orientation ?? (unit.levelOrder <= 3 ? "vertical" : "horizontal");
+    // "auto" = align with longer axis; explicit column config override takes precedence
+    const blockOrientation = colConf?.orientation ?? "auto";
     // Per-column font size, with font rules taking highest priority
     const matchingRule = fontRules.find(r =>
       unit.start !== null &&
@@ -1063,7 +1103,7 @@ if (showGSSP) {
     });
 }
 
-  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits]);
+  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits, headerHeight]);
 
   // Re-apply counter-scale after the render effect rebuilds the SVG (transform mode only).
   // MUST be declared after the render effect so React runs it second.
@@ -1072,7 +1112,7 @@ if (showGSSP) {
     const k = transformRef.current.k;
     if (k === 1) return;
     applyCounterScale(k);
-  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits, applyCounterScale]);
+  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits, headerHeight, applyCounterScale]);
 
   // Persist UI preferences
   useEffect(() => {
@@ -1083,10 +1123,10 @@ if (showGSSP) {
       scaleType, equalSizeLevel,
       picksMode, manualPicksLevel, showUncertainty, picksSigFigs,
       hiddenUnits: [...hiddenUnits],
-      showMinimap,
+      headerHeight, headerFontSize,
     };
     localStorage.setItem("gt_prefs", JSON.stringify(prefs));
-  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, showMinimap]);
+  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, headerHeight, headerFontSize]);
 
   useEffect(() => {
     localStorage.setItem("gt_unitEdits", JSON.stringify(unitEdits));
@@ -1292,87 +1332,6 @@ if (showGSSP) {
     }
   }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode]);
 
-  // Minimap drawing
-  useEffect(() => {
-    const canvas = minimapRef.current;
-    if (!canvas || !showMinimap) return;
-    const W = 55;
-    const H = canvas.offsetHeight || canvas.clientHeight || 400;
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#f8f8f8";
-    ctx.fillRect(0, 0, W, H);
-
-    const miniScale = d3.scaleLinear().domain([ICS_MIN_AGE, ICS_MAX_AGE]).range([0, H]);
-
-    // Draw Era then Period blocks
-    [3, 2].forEach(targetLevel => {
-      effectiveUnits
-        .filter(u => u.levelOrder === targetLevel && u.start !== null && isUnitVisible(u.id, hiddenUnits))
-        .forEach(u => {
-          const y1 = miniScale(u.end ?? 0);
-          const y2 = miniScale(u.start);
-          ctx.fillStyle = u.icsColor || "#ccc";
-          ctx.fillRect(0, Math.min(y1, y2), W, Math.abs(y2 - y1));
-        });
-    });
-
-    // Viewport indicator
-    let vpMin, vpMax;
-    if (zoomMode === "dynamic") {
-      [vpMin, vpMax] = visibleDomain;
-    } else {
-      const svgEl = svgRef.current;
-      const h = svgEl?.clientHeight || 600;
-      const k = currentTransform.k || 1;
-      const ty = currentTransform.y || 0;
-      const fullSc = d3.scaleLinear().domain([dynamicMinAge, dynamicMaxAge]).range([MARGIN, h - MARGIN]);
-      vpMin = fullSc.invert((MARGIN - ty) / k);
-      vpMax = fullSc.invert((h - MARGIN - ty) / k);
-    }
-    const vpY1 = miniScale(Math.max(ICS_MIN_AGE, Math.min(vpMin, vpMax)));
-    const vpY2 = miniScale(Math.min(ICS_MAX_AGE, Math.max(vpMin, vpMax)));
-    ctx.fillStyle = "rgba(30, 100, 220, 0.22)";
-    ctx.fillRect(0, vpY1, W, vpY2 - vpY1);
-    ctx.strokeStyle = "rgba(30, 100, 220, 0.75)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0, vpY1, W, vpY2 - vpY1);
-  }, [showMinimap, effectiveUnits, hiddenUnits, zoomMode, visibleDomain, currentTransform, dynamicMinAge, dynamicMaxAge]);
-
-  // Minimap click to navigate
-  useEffect(() => {
-    const canvas = minimapRef.current;
-    if (!canvas || !showMinimap) return;
-    const onClick = e => {
-      const rect = canvas.getBoundingClientRect();
-      const frac = (e.clientY - rect.top) / rect.height;
-      const clickAge = ICS_MIN_AGE + frac * (ICS_MAX_AGE - ICS_MIN_AGE);
-      if (zoomMode === "dynamic") {
-        const [vMin, vMax] = visibleDomainRef.current;
-        const span = vMax - vMin;
-        const newMin = Math.max(ICS_MIN_AGE, Math.min(ICS_MAX_AGE - span, clickAge - span / 2));
-        visibleDomainRef.current = [newMin, newMin + span];
-        setVisibleDomain([newMin, newMin + span]);
-      } else {
-        const svgEl = svgRef.current;
-        if (!svgEl) return;
-        const h = svgEl.clientHeight;
-        const k = transformRef.current.k || 1;
-        const fullSc = d3.scaleLinear().domain([dynamicMinAge, dynamicMaxAge]).range([MARGIN, h - MARGIN]);
-        const newTy = h / 2 - fullSc(clickAge) * k;
-        const newTransform = d3.zoomIdentity.translate(transformRef.current.x || 0, newTy).scale(k);
-        transformRef.current = newTransform;
-        setCurrentTransform(newTransform);
-        if (zoomBehaviorRef.current && svgEl) {
-          d3.select(svgEl).call(zoomBehaviorRef.current.transform, newTransform);
-        }
-      }
-    };
-    canvas.addEventListener("click", onClick);
-    return () => canvas.removeEventListener("click", onClick);
-  }, [showMinimap, zoomMode, dynamicMinAge, dynamicMaxAge]); // eslint-disable-line react-hooks/exhaustive-deps
-
   return (
     <div style={{
       width: "100vw",
@@ -1436,10 +1395,6 @@ if (showGSSP) {
             </label>
 
             <button onClick={handleResetZoom}>Reset Zoom</button>
-            <label style={{ marginLeft: 8 }}>
-              <input type="checkbox" checked={showMinimap} onChange={e => setShowMinimap(e.target.checked)} />
-              {" "}Minimap
-            </label>
 
             <strong>Time Units:</strong>
             {["Ga", "Ma", "ka"].map(unit => (
@@ -1582,6 +1537,19 @@ if (showGSSP) {
 
         {activeTab === "Display" && (
           <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
+            <strong>Headers:</strong>
+            <label>
+              Size:
+              <input
+                type="range"
+                min="8"
+                max="22"
+                value={headerFontSize}
+                onChange={e => setHeaderFontSize(Number(e.target.value))}
+                style={{ marginLeft: 6 }}
+              />
+              {headerFontSize}px
+            </label>
             <strong>Text:</strong>
             <label>
               Size:
@@ -1861,35 +1829,91 @@ if (showGSSP) {
             {(() => {
               const k = zoomMode === "dynamic" ? 1 : (currentTransform.k || 1);
               const tx = zoomMode === "dynamic" ? lateralOffset : (currentTransform.x || 0);
+              // Canvas for text measurement
+              const _hc = document.createElement("canvas");
+              const _hctx = _hc.getContext("2d");
+              _hctx.font = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}${headerFontSize}px ${fontFamily}`;
               return (
                 <div style={{
                   position: "absolute",
                   top: 0,
                   left: 0,
                   right: 0,
-                  height: MARGIN,
-                  pointerEvents: "none",
+                  height: headerHeight,
+                  pointerEvents: "auto",
                   zIndex: 10,
                   background: "white",
                   borderBottom: "1px solid black",
-                  overflow: "hidden"
+                  overflow: "hidden",
+                  userSelect: "none",
                 }}>
-                  {layout.map(col => (
-                    <div key={col.id} style={{
+                  {layout.map((col, i) => {
+                    const colW = col.width * k;
+                    const name = getColDisplayName(col);
+                    const textW = _hctx.measureText(name).width;
+                    const isVertical = colW < textW + 16;
+                    return (
+                      <div key={col.id} style={{
+                        position: "absolute",
+                        left: col.start * k + tx,
+                        width: colW,
+                        top: 0,
+                        height: headerHeight,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: headerFontSize,
+                        fontFamily,
+                        fontWeight: fontBold ? "bold" : "normal",
+                        fontStyle: fontItalic ? "italic" : "normal",
+                        textDecoration: fontUnderline ? "underline" : "none",
+                        overflow: "hidden",
+                        borderLeft: i === 0 ? "1px solid #ccc" : "none",
+                        borderRight: "1px solid #ccc",
+                        boxSizing: "border-box",
+                        pointerEvents: "none",
+                      }}>
+                        <span style={isVertical ? {
+                          writingMode: "vertical-rl",
+                          transform: "rotate(180deg)",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                        } : {
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          maxWidth: "100%",
+                          padding: "0 4px",
+                        }}>
+                          {name}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {/* Resize handle */}
+                  <div
+                    style={{
                       position: "absolute",
-                      left: col.start * k + tx,
-                      width: col.width * k,
-                      top: 0,
-                      height: MARGIN,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 11,
-                      fontWeight: "bold",
-                      overflow: "hidden",
-                      whiteSpace: "nowrap"
-                    }}>{getColDisplayName(col)}</div>
-                  ))}
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      height: 6,
+                      cursor: "ns-resize",
+                      zIndex: 20,
+                    }}
+                    onMouseDown={e => {
+                      e.preventDefault();
+                      const startY = e.clientY;
+                      const startH = headerHeight;
+                      const onMove = mv => setHeaderHeight(Math.max(24, startH + mv.clientY - startY));
+                      const onUp = () => {
+                        window.removeEventListener("mousemove", onMove);
+                        window.removeEventListener("mouseup", onUp);
+                      };
+                      window.addEventListener("mousemove", onMove);
+                      window.addEventListener("mouseup", onUp);
+                    }}
+                  />
                 </div>
               );
             })()}
@@ -1935,22 +1959,6 @@ if (showGSSP) {
                 />
               );
             })}
-            {showMinimap && (
-              <canvas
-                ref={minimapRef}
-                style={{
-                  position: "absolute",
-                  right: 0,
-                  top: 0,
-                  width: 55,
-                  height: "100%",
-                  zIndex: 12,
-                  cursor: "pointer",
-                  pointerEvents: "auto",
-                  borderLeft: "1px solid #ccc",
-                }}
-              />
-            )}
           </div>
         </div>
       </div>

@@ -20,21 +20,6 @@ export function renderPicks({
   picksSigFigs = 3,
   fontSize = 10
 }) {
-  // ===== Right border only =====
-
-  const border2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-
-  border2.setAttribute("x1", column.end);
-  border2.setAttribute("x2", column.end);
-  border2.setAttribute("y1", margin);
-  border2.setAttribute("y2", height - margin);
-
-  border2.setAttribute("stroke", "black");
-  border2.setAttribute("stroke-width", "0.5");
-  border2.setAttribute("data-base-stroke", "0.5");
-
-  svg.appendChild(border2);
-
   // ===== Boundary Lines + Labels =====
 
   boundaryAges.forEach(({ age, uncertainty, approximate }) => {
@@ -58,8 +43,9 @@ export function renderPicks({
     const textWidth = label.getBBox().width;
     svg.removeChild(label);
 
-    const labelMargin = 6;
-    const labelPadding = textWidth + 8;
+    const rightMargin = 4;
+    const tickLabelGap = 12;  // ~double space at 10px font
+    const labelPadding = textWidth + tickLabelGap + rightMargin;
 
     // ---- Tick ----
     const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -71,7 +57,7 @@ export function renderPicks({
     tick.setAttribute("y1", pos);
     tick.setAttribute("y2", pos);
 
-    label.setAttribute("x", column.end - labelMargin);
+    label.setAttribute("x", column.end - rightMargin);
     label.setAttribute("y", pos);
     label.setAttribute("dominant-baseline", "middle");
     label.setAttribute("text-anchor", "end");
