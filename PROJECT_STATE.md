@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-04 (Subepoch/Subseries rank added)*
+*Last Updated: 2026-04-04 (~ approximate markers, picks font size fix)*
 
 ------------------------------------------------------------------------
 
@@ -8,10 +8,12 @@
 
 Full rendering pipeline stable in vertical orientation. Horizontal
 orientation code fully removed. Data layer is ICS 2024/12 (178 units)
-plus 13 manually-added Subepoch units (191 total). Dual zoom modes, four
+plus 11 manually-added Subepoch units (189 total). Dual zoom modes, four
 scale types, data editor with resizable sidebar, filter tree, scroll
-sync — all working. Two Picks column bug fixes (rounding epsilon,
-counter-scale order) remain applied but unverified in browser.
+sync — all working. Picks column shows ~ prefix on approximate boundaries
+when showUncertainty is on. Picks font size now tracks the global font
+size slider and zoom counter-scale. One Picks bug fix (rounding epsilon)
+remains applied but unverified in browser.
 
 ------------------------------------------------------------------------
 
@@ -62,19 +64,22 @@ export (`chart.txt`, Turtle/RDF format) using `scripts/parse-chart.cjs`.
 A second source file, `scripts/xlabels-en.ttl` (from ICS chart GitHub
 repo), provides context-annotated English labels.
 
-**178 units** parsed from ICS 2024/12.
+**178 units** parsed from ICS 2024/12, plus 11 manually-added Subepoch
+units = **189 total** in `geologicTime.json`.
 
 **Fields per unit:**
 
-| Field                      | Coverage    | Notes                                                   |
-|----------------------------|-------------|---------------------------------------------------------|
-| `startUncertainty`         | 104 / 178   | null for Cenozoic and Precambrian units                 |
-| `endUncertainty`           | 102 / 178   | same pattern                                            |
-| `ratifiedGSSP`             | 130 / 178   | `true` = has ratified GSSP, `false` = does not          |
-| `ratifiedGSSA`             | 19 / 178    | `true` = has ratified GSSA, `false` = does not          |
-| `shortCode`                | 178 / 178   | CGMW short codes (e.g. `j1`, `PH`)                     |
-| `order`                    | 178 / 178   | ICS chart display order                                 |
-| `displayNameStratigraphic` | 15 / 178    | Only set when stratigraphic name differs from timescale |
+| Field                      | Coverage    | Notes                                                           |
+|----------------------------|-------------|-----------------------------------------------------------------|
+| `startUncertainty`         | 104 / 178   | null for Cenozoic and Precambrian units                         |
+| `startApproximate`         | 18 / 178    | `true` = `skos:note "uncertain"` on start boundary in chart.txt |
+| `endUncertainty`           | 102 / 178   | same pattern as startUncertainty                                |
+| `endApproximate`           | 18 / 178    | `true` = `skos:note "uncertain"` on end boundary in chart.txt   |
+| `ratifiedGSSP`             | 130 / 178   | `true` = has ratified GSSP, `false` = does not                  |
+| `ratifiedGSSA`             | 19 / 178    | `true` = has ratified GSSA, `false` = does not                  |
+| `shortCode`                | 178 / 178   | CGMW short codes (e.g. `j1`, `PH`)                             |
+| `order`                    | 178 / 178   | ICS chart display order                                         |
+| `displayNameStratigraphic` | 15 / 178    | Only set when stratigraphic name differs from timescale         |
 
 **Dual-label units** (15 total, e.g. "Early Cretaceous" / "Lower
 Cretaceous") — timescale form in `displayName`, stratigraphic form in
@@ -187,23 +192,25 @@ for reference. Contains 26-language label data and older isc2020.ttl.
 -   `unitEdits` saved separately to `gt_unitEdits`.
 -   Two dedicated save `useEffect`s (after the counter-scale effect).
 
-## ⚠️ Picks Column — 2 Bug Fixes Applied, Needs Browser Verify
+## ✅ Picks Column
 
-### What is implemented
 -   Auto mode: deepest visible level with coverage.
 -   Manual mode: ceiling level with fallback.
 -   Present-day (0 Ma) always included.
--   `showUncertainty` appends ` ±value` to label when true and non-null.
+-   `showUncertainty` appends ` ±value` to label when true and uncertainty is non-null.
+-   `showUncertainty` prepends `~` to label when true and `approximate` is true.
+-   `approximate` field sourced from `startApproximate` in `geologicTime.json`
+    (derived from `skos:note "uncertain"` in ICS chart.txt boundary blocks).
+-   `boundaryAges` entries carry `{ age, uncertainty, approximate }`.
+-   Font size tracks the global `fontSize` state — passed to `renderPicks()` and
+    stored in `data-base-font-size` so zoom counter-scale applies correctly.
 -   Default sigFigs: **4**.
 -   `formatAge` strips trailing zeros via `String(parseFloat(...))`.
 -   Epsilon guard: `Math.floor(Math.log10(Math.abs(age)) + 1e-10)`.
 
-### BUG 1 — Rounding display (fix applied, verify in browser)
+### ⚠️ BUG — Rounding display (fix applied, verify in browser)
 `+ 1e-10` epsilon prevents floating-point floor errors (e.g.
 `log10(1000) = 2.9999...`). Verify age labels correct at all sigFig settings.
-
-### BUG 2 — Font size shifts when sigFigs changes (fix applied, verify in browser)
-Counter-scale `useEffect` is now declared **after** the render `useEffect`.
 
 ## ✅ Filter Tab
 
@@ -233,8 +240,8 @@ Counter-scale `useEffect` is now declared **after** the render `useEffect`.
 
 # Known Issues / Uncertain Behaviour
 
-1.  **Picks rounding & font size** — fixes applied, needs browser
-    verification before closing.
+1.  **Picks rounding** — epsilon fix applied to `formatAge`, needs browser
+    verification at all sigFig settings.
 
 2.  **Scroll sync math in transform mode (vertical)** — `scrollTop ↔ ty`
     conversion may be imperfect at extreme zoom levels or after lateral
@@ -263,11 +270,17 @@ Counter-scale `useEffect` is now declared **after** the render `useEffect`.
 -   Data file is based on **ICS 2024/12** — current as of project start.
 -   **Unnamed placeholder units** exist: Cambrian Stages 2, 3, 4, 10 and
     Upper Pleistocene. Displayed via xlabels-en.ttl labels.
--   **Subepoch/Subseries** rank now implemented (level 5.5) with 13
+-   **Subepoch/Subseries** rank now implemented (level 5.5) with 11
     units across Holocene, Pleistocene, Pliocene, and Miocene. Units
-    were added manually (not from `chart.txt`, which lacks them). Colors
-    inherit from parent epochs. `parse-chart.cjs` updated to handle
-    `Subepoch` rank if it appears in future ICS data.
+    were added manually (not in `chart.txt`). Colors inherit from parent
+    epochs. `parse-chart.cjs` updated to handle `Subepoch` rank if it
+    appears in future ICS data. **Important:** re-running the parser
+    drops the 11 Subepoch units and resets the 15 re-parented daughter
+    Ages — must run the post-parser patch script after each parser run.
+-   **Approximate boundaries** (`startApproximate` / `endApproximate`)
+    derived from `skos:note "uncertain"` within `time:hasBeginning` /
+    `time:hasEnd` blocks in `chart.txt`. 18 units affected. These fields
+    are `false` on manually-added Subepoch units.
 -   **ICS colors** should be verified against current chart before
     export features are finalized.
 -   **Live API** at stratigraphy.org/chartdata — evaluate when live
@@ -365,23 +378,24 @@ Counter-scale `useEffect` is now declared **after** the render `useEffect`.
 
 # Next Session Plan
 
-## Priority 1 — Browser-verify Picks Bug Fixes
--   Confirm rounding is correct at all sigFig settings.
--   Confirm font size no longer shifts when sigFigs dropdown changes.
+## Priority 1 — Browser-verify Picks Rounding Fix
+-   Confirm `formatAge` rounding is correct at all sigFig settings.
+-   Confirm `~` prefix appears correctly for approximate boundaries when
+    showUncertainty is on.
 
 ## Priority 2 — Tooltip Edge Detection
 -   Flip tooltip left/above when cursor is near right/bottom edge.
 -   Add GSSP/GSSA status and shortCode to tooltip content.
 
 ## Priority 3 — Highlight Block on Hover
--   On `hoverUnit` change, brighten the hovered block rect (e.g. apply
-    a lighter fill or a thicker stroke) for visual feedback before the
-    tooltip appears. Since rects are imperative DOM, track by
-    `data-unit-id` and mutate directly on hover.
+-   On `hoverUnit` change, brighten the hovered block rect (lighter fill
+    or thicker stroke) for visual feedback. Track by `data-unit-id` and
+    mutate directly — no re-render needed.
 
 ## Priority 4 — Adaptive Tick Spacing
 -   Pass dynamic `tickStep` back through `formatTickLabel` so intervals
-    auto-adjust as zoom level changes.
+    auto-adjust as zoom level changes (e.g. switch to 1 Ma / 0.1 Ma
+    when zoomed into the Cenozoic).
 
 ## Priority 5 — Named Zoom Shortcuts
 -   Dropdown or buttons in View tab: jump to full extent, Phanerozoic,
@@ -404,8 +418,8 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Resume from 2026-04-03 state.
-Stack: React 19 + D3 v7 + Vite. SVG-driven geologic timescale visualizer based on ICS 2024/12 data (178 units in src/data/geologicTime.json).
+GeoTimeline — Resume from 2026-04-04 state.
+Stack: React 19 + D3 v7 + Vite. SVG-driven geologic timescale visualizer based on ICS 2024/12 data (189 units in src/data/geologicTime.json: 178 parsed + 11 manually-added Subepoch units).
 Architecture — do not break these:
 
 Single useEffect owns all SVG construction (clear → rebuild). Do not split it.
@@ -413,7 +427,7 @@ Second useEffect owns zoom/pan event binding. Third re-applies counter-scale aft
 Two more useEffects manage scrollbar ↔ zoom sync. isScrollSyncing ref prevents feedback loops.
 Two localStorage save useEffects (gt_prefs and gt_unitEdits keys) run after the counter-scale effect.
 buildScale() is a pure function returning one of four scale implementations (linear, log, equalSize, eraEqual).
-computeLayout() accepts initialOffset so columns start after the MARGIN header zone.
+computeLayout() accepts initialOffset so columns start after the MARGIN header zone. Uses ?? 80 fallback for missing level keys.
 Layered SVG groups: backgroundLayer → blockLayer → picksLayer.
 ALL_UNITS / UNIT_MAP are module-level constants, not re-derived on render.
 _initPrefs / _initUnitEdits are module-level IIFEs that parse localStorage once; all useState calls use lazy initializers seeded from them.
@@ -424,19 +438,23 @@ Block rects carry data-unit-id attributes for hover lookup.
 Orientation is vertical only — horizontal code fully deleted, no branches remain.
 Structural changes must be introduced in minimal deltas.
 
-Working features: Vertical orientation only. Dual zoom modes (transform / dynamic) with mode-switching that converts state representations without resetting. Four scale types. Scrollbar sync. Column resize handles (delta divided by zoom k). Sticky div-based column headers. Naming mode (Timescale / Stratigraphic / Both). Auto text contrast (NTSC luminance). Picks column with auto/manual mode, uncertainty display, sigFigs. Data editor sidebar (resizable, sortable, inline color picker). Filter tree (recursive, ancestor-aware). localStorage persistence for all UI preferences and unitEdits. Block hover tooltip (floating div, dark background, shows name/rank/age). Label suppression on sub-threshold blocks (block.height < fontSize × 1.5). Export tab (SVG download, PNG download, copy PNG to clipboard). Subepoch/Subseries rank (level 5.5, 13 units: 3 Holocene, 3 Pleistocene, 2 Pliocene, 3 Miocene) with re-parented daughter Ages.
-Known issues (unverified fixes applied):
+Data notes:
+- 11 Subepoch units (Early/Middle/Late for Holocene, Pleistocene, Pliocene, Miocene) added manually — not in chart.txt. Re-running parse-chart.cjs drops them and resets the 15 re-parented daughter Ages; a post-parser patch step is required.
+- startApproximate / endApproximate fields on all units (sourced from skos:note "uncertain" in chart.txt boundary blocks). 18 units have approximate boundaries.
+- boundaryAges entries carry { age, uncertainty, approximate }. PicksRenderer prepends ~ when showUncertainty && approximate.
+- Picks font size tracks global fontSize state and data-base-font-size for zoom counter-scale.
 
+Working features: Vertical orientation only. Dual zoom modes (transform / dynamic) with mode-switching that converts state representations without resetting. Four scale types. Scrollbar sync. Column resize handles (delta divided by zoom k). Sticky div-based column headers. Naming mode (Timescale / Stratigraphic / Both). Auto text contrast (NTSC luminance). Picks column with auto/manual mode, uncertainty (±) display, approximate (~) display, sigFigs, font size tracking. Data editor sidebar (resizable, sortable, inline color picker). Filter tree (recursive, ancestor-aware). localStorage persistence for all UI preferences and unitEdits (with migration for new level 5.5 Subepoch column). Block hover tooltip (floating div, dark background, shows name/rank/age). Label suppression on sub-threshold blocks (block.height < fontSize × 1.5). Export tab (SVG download, PNG download, copy PNG to clipboard). Subepoch/Subseries rank (level 5.5, 11 units) with re-parented daughter Ages.
+
+Known issues:
 Picks rounding — epsilon fix applied to formatAge, needs browser verify.
-Font size shift on sigFigs change — counter-scale effect moved after render effect, needs browser verify.
 Scroll sync math in vertical transform mode may be imperfect at extremes.
 buildScale("equalSize") uses full dataset, not visible-only units.
 Lateral offset resets on zoom mode switch.
 Tooltip has no edge detection (may clip near right/bottom of viewport).
 
 Priority order for this session:
-
-Browser-verify the two Picks bug fixes.
+Browser-verify the Picks rounding fix and ~ approximate display.
 Tooltip edge detection + add GSSP/GSSA/shortCode to tooltip.
 Highlight block on hover (mutate rect stroke/fill directly via data-unit-id).
 Adaptive tick spacing.
