@@ -33,8 +33,12 @@ export function renderBlocks({
     rect.setAttribute("stroke", "black");
     rect.setAttribute("stroke-width", 0.5);
     rect.setAttribute("data-base-stroke", "0.5");
+    if (block.unitId) rect.setAttribute("data-unit-id", block.unitId);
 
     svg.appendChild(rect);
+
+    // Skip label when the time-axis pixel size is below threshold
+    if (block.height < fontSize * 1.5) return;
 
     const label = document.createElementNS(
       "http://www.w3.org/2000/svg",

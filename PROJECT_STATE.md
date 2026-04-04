@@ -1,20 +1,17 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-03-25*
+*Last Updated: 2026-04-04 (Subepoch/Subseries rank added)*
 
 ------------------------------------------------------------------------
 
 # Current State Summary
 
-Full rendering pipeline stable in both vertical and horizontal
-orientations. Data layer updated from ICS 2024/12. Dual zoom modes,
-four scale types, data editor with resizable sidebar, filter tree,
-scroll sync — all working. Horizontal orientation was broken (variable
-shadowing culled nearly all blocks, scroll math inverted) — fixed this
-session. Two Picks column bugs have fixes applied and need browser
-verification. New features added this session: GSSP/GSSA schema split,
-dual timescale/stratigraphic naming with three-way toggle, and auto
-contrast text color on blocks.
+Full rendering pipeline stable in vertical orientation. Horizontal
+orientation code fully removed. Data layer is ICS 2024/12 (178 units)
+plus 13 manually-added Subepoch units (191 total). Dual zoom modes, four
+scale types, data editor with resizable sidebar, filter tree, scroll
+sync — all working. Two Picks column bug fixes (rounding epsilon,
+counter-scale order) remain applied but unverified in browser.
 
 ------------------------------------------------------------------------
 
@@ -28,6 +25,7 @@ contrast text color on blocks.
     — **must be declared after the render effect** so React runs it
     second (declaration order = execution order).
 -   Two more `useEffect`s manage scrollbar ↔ zoom state sync.
+-   Two more `useEffect`s persist preferences to localStorage.
 -   `buildScale()` is a pure function called inside the render effect —
     returns one of four scale implementations.
 -   `computeLayout()` accepts an `initialOffset` parameter so columns
@@ -38,34 +36,31 @@ contrast text color on blocks.
 
 -   `ALL_UNITS` and `UNIT_MAP` are module-level constants (built once,
     not re-derived on every render).
+-   `_initPrefs` and `_initUnitEdits` are module-level IIFEs that parse
+    `localStorage` once on load and seed the lazy `useState` initializers.
 -   `effectiveUnits` = `ALL_UNITS` with `unitEdits` overlaid — used
     everywhere instead of raw data.
 -   `isUnitVisible(unitId, hiddenUnits)` walks the ancestor chain so
     hiding a parent implicitly hides children.
--   `dynamicMinAge` / `dynamicMaxAge` are derived from currently visible
+-   `dynamicMinAge` / `dynamicMaxAge` derived from currently visible
     units, not hardcoded ICS bounds.
 
 ## Orientation Notes
 
--   **Vertical:** young (0 Ma) at top, old at bottom. Scale range
+-   **Vertical only.** Young (0 Ma) at top, old at bottom. Scale range
     `[MARGIN, height−MARGIN]`. Columns laid out left→right.
--   **Horizontal:** old at left, young at right. Scale range
-    `[width−MARGIN, MARGIN]` (reversed). Columns laid out top→bottom.
--   Block building uses `colBandStart`/`colBandWidth`/`blockY` (renamed
-    from `x`/`width`/`y` this session to eliminate variable shadowing
-    that was culling all blocks in horizontal mode).
--   Horizontal scroll convention: `scrollLeft=0` = oldest (leftmost)
-    content. Dynamic mode domain formulas invert accordingly.
+-   Block building uses `colBandStart`/`colBandWidth`/`blockY`.
+-   Horizontal orientation has been fully deleted — no state, no branches,
+    no dead code remaining.
 
 ------------------------------------------------------------------------
 
 # Data File
 
-`src/data/geologicTime.json` was regenerated from the official ICS
-2024/12 Linked Data export (`chart.txt`, Turtle/RDF format) using
-`scripts/parse-chart.cjs`. A second source file, `scripts/xlabels-en.ttl`
-(copied from the ICS chart GitHub repo), provides context-annotated
-English labels.
+`src/data/geologicTime.json` regenerated from ICS 2024/12 Linked Data
+export (`chart.txt`, Turtle/RDF format) using `scripts/parse-chart.cjs`.
+A second source file, `scripts/xlabels-en.ttl` (from ICS chart GitHub
+repo), provides context-annotated English labels.
 
 **178 units** parsed from ICS 2024/12.
 
@@ -123,12 +118,6 @@ for reference. Contains 26-language label data and older isc2020.ttl.
 -   **Era Equal** — four hard-coded eras each get one quarter of the
     height.
 
-## ✅ Both Orientations — Vertical and Horizontal
-
--   Horizontal mode fixed this session (see Architecture Lessons #10–12).
--   All zoom, pan, scroll sync, and block rendering verified working in
-    both orientations.
-
 ## ✅ Scrollbar Sync
 
 -   `scrollContainerRef` div wraps the SVG with `overflow: scroll`.
@@ -140,7 +129,7 @@ for reference. Contains 26-language label data and older isc2020.ttl.
 
 -   Div-based sticky header bar (40px = `MARGIN`).
 -   Positioned using `col.start * k + tx` to track zoom and lateral pan.
--   Header labels respect the active **Naming** mode (see below).
+-   Header labels respect the active **Naming** mode.
 
 ## ✅ Resize Handles (columns)
 
@@ -155,50 +144,66 @@ for reference. Contains 26-language label data and older isc2020.ttl.
 
 ## ✅ Naming Mode (Timescale / Stratigraphic / Both)
 
--   Three-way toggle in Display tab: **Timescale**, **Stratigraphic**,
-    **Both**.
+-   Three-way toggle in Display tab.
 -   Applies to both block labels and column headers simultaneously.
--   `columnConfig` stores both `label` (timescale) and `labelStrat`
-    (stratigraphic) per level.
--   Only 15 units have distinct stratigraphic block labels; all others
-    display identically in all modes.
--   "Both" mode renders "Early Cretaceous / Lower Cretaceous" etc.
 
 ## ✅ Auto Text Contrast
 
 -   `BlockRenderer.js` uses NTSC luminance formula to choose black or
     white label text based on block fill color.
--   Toggle checkbox in Display tab: **Auto text contrast** (on by default).
+-   Toggle checkbox in Display tab (on by default).
 
-## ⚠️ Picks Column — 2 Active Bugs (fixes applied, needs browser verify)
+## ✅ Label Suppression on Sub-Threshold Blocks
+
+-   `BlockRenderer.js` skips rendering the label text when `block.height`
+    is less than `fontSize × 1.5`.
+
+## ✅ Tooltip on Block Hover
+
+-   `hoverUnit` and `tooltipPos` state in App.
+-   Block rects carry a `data-unit-id` attribute (set in `BlockRenderer.js`).
+-   `onMouseMove` on the SVG element reads `e.target.getAttribute("data-unit-id")`,
+    looks up the unit in `effectiveUnits`, and sets hover state.
+-   `onMouseLeave` clears `hoverUnit`.
+-   Floating `position: fixed` dark tooltip shows: display name,
+    stratigraphic name (if distinct), rank, and age range in Ma.
+
+## ✅ Export Tab
+
+-   **Download SVG** — `XMLSerializer` → SVG blob → `<a>` click.
+-   **Download PNG** — SVG blob → `Image` → `canvas` → PNG blob → `<a>` click.
+-   **Copy PNG to Clipboard** — PNG blob → `navigator.clipboard.write(ClipboardItem)`.
+
+## ✅ localStorage Persistence
+
+-   Module-level `_initPrefs` IIFE parses `gt_prefs` key once on load.
+-   Module-level `_initUnitEdits` IIFE parses `gt_unitEdits` key once on load.
+-   All UI preferences use lazy `useState(() => _initPrefs.x ?? default)`.
+-   `hiddenUnits` (Set) serialized as array in `gt_prefs`.
+-   Preferences saved: timeUnit, columnConfig, columnWidths, labelMode,
+    contrastText, fontSize, fontFamily, labelOrientation, scaleType,
+    equalSizeLevel, picksMode, manualPicksLevel, showUncertainty,
+    picksSigFigs, hiddenUnits.
+-   `unitEdits` saved separately to `gt_unitEdits`.
+-   Two dedicated save `useEffect`s (after the counter-scale effect).
+
+## ⚠️ Picks Column — 2 Bug Fixes Applied, Needs Browser Verify
 
 ### What is implemented
 -   Auto mode: deepest visible level with coverage.
 -   Manual mode: ceiling level with fallback.
 -   Present-day (0 Ma) always included.
--   `boundaryAges` is `[{age, uncertainty}]` — PicksRenderer
-    destructures each entry.
--   `showUncertainty` appends ` ±value` to the label text when true
-    and uncertainty is non-null.
+-   `showUncertainty` appends ` ±value` to label when true and non-null.
 -   Default sigFigs: **4**.
--   `formatAge` strips trailing zeros:
-    `String(parseFloat(age.toFixed(decimals)))`.
--   Floor rule: `decimals = max(0, sigFigs−1−magnitude)` — never
-    coarser than 1 Ma (integer) precision.
--   Epsilon guard on `Math.log10` floor to prevent floating-point
-    magnitude miscalculation.
+-   `formatAge` strips trailing zeros via `String(parseFloat(...))`.
+-   Epsilon guard: `Math.floor(Math.log10(Math.abs(age)) + 1e-10)`.
 
 ### BUG 1 — Rounding display (fix applied, verify in browser)
-Applied `+ 1e-10` epsilon to `Math.log10` in `formatAge` to prevent
-floating-point floor errors (e.g. `log10(1000) = 2.9999...`). Verify
-that age labels now display correctly at all sigFig settings.
+`+ 1e-10` epsilon prevents floating-point floor errors (e.g.
+`log10(1000) = 2.9999...`). Verify age labels correct at all sigFig settings.
 
-### BUG 2 — Font size shifts when sigFigs is changed (fix applied, verify in browser)
-Root cause: counter-scale `useEffect` was declared **before** the render
-`useEffect`. React runs effects in declaration order, so counter-scale
-was firing on the old DOM before the render rebuilt it, leaving new
-elements unscaled. Fixed by moving the counter-scale effect to be
-declared after the render effect.
+### BUG 2 — Font size shifts when sigFigs changes (fix applied, verify in browser)
+Counter-scale `useEffect` is now declared **after** the render `useEffect`.
 
 ## ✅ Filter Tab
 
@@ -207,36 +212,22 @@ declared after the render effect.
 
 ## ✅ Data Editor Sidebar (Data Tab)
 
--   **Resizable** — drag handle on the left edge; `editorWidth` state
-    (default 820px, min 300px).
--   Columns: Name, Full Name, Rank (read-only), Start, ±Start (editable),
-    End, ±End (editable), Parent, Color, Boundary (read-only), Code (read-only).
--   **Boundary** column shows "✓ GSSP" (green), "GSSA" (gray), or "—"
-    by reading both `ratifiedGSSP` and `ratifiedGSSA` boolean fields.
--   Search, rank filter, sortable headers, inline editing, color picker.
+-   Resizable sidebar, sortable columns, inline editing, color picker.
 -   Edited cells/rows highlighted yellow.
--   `commitEdit` parses `startUncertainty` / `endUncertainty` as nullable
-    floats.
--   Edits stored in `unitEdits` state — **session-only, no persistence**.
+-   Edits now persisted to `localStorage` (`gt_unitEdits` key).
 
 ## ✅ Display Tab
 
 -   Font size slider, font family picker, label orientation.
--   Auto text contrast toggle.
--   Naming mode: Timescale / Stratigraphic / Both.
--   Scale type selector (Linear, Log, Equal Size, Era Equal).
+-   Auto text contrast toggle. Naming mode. Scale type selector.
 
 ## ✅ View Tab
 
--   Orientation, zoom mode, reset zoom, time unit (Ga/Ma/ka).
+-   Zoom mode, reset zoom, time unit (Ga/Ma/ka).
 
 ## ✅ Columns Tab
 
 -   Show/hide hierarchy columns (Super-Eon → Age).
-
-## ⚠️ Export Tab
-
--   Placeholder — no functionality implemented.
 
 ------------------------------------------------------------------------
 
@@ -247,7 +238,7 @@ declared after the render effect.
 
 2.  **Scroll sync math in transform mode (vertical)** — `scrollTop ↔ ty`
     conversion may be imperfect at extreme zoom levels or after lateral
-    pan. Horizontal scroll math was fixed this session.
+    pan.
 
 3.  **Counter-scale in dynamic mode** — font sizes are always 1:1 in
     dynamic mode (no matrix transform). Confirm this is intentional.
@@ -256,14 +247,14 @@ declared after the render effect.
     `effectiveUnits` (full dataset). Hiding units may not affect slot
     distribution as expected.
 
-5.  **Data editor edits are session-only** — no persistence across page
-    reloads.
-
-6.  **Lateral offset resets on mode switch** — sideways pan position
+5.  **Lateral offset resets on mode switch** — sideways pan position
     lost when switching zoom modes.
 
-7.  **Block labels overflow small blocks** — no minimum size threshold;
-    text renders even when block is only a few pixels tall/wide.
+6.  **Tooltip near screen edges** — tooltip positioned at cursor + 14px;
+    no edge detection to flip it when near the right/bottom edge.
+
+7.  **PNG export with external fonts** — canvas rasterization may not
+    embed custom web fonts; system fonts (Arial etc.) are safe.
 
 ------------------------------------------------------------------------
 
@@ -271,18 +262,18 @@ declared after the render effect.
 
 -   Data file is based on **ICS 2024/12** — current as of project start.
 -   **Unnamed placeholder units** exist: Cambrian Stages 2, 3, 4, 10 and
-    Upper Pleistocene. Now display as "Cambrian Stage 2" etc. from
-    xlabels-en.ttl. Renderer handles missing `displayName` gracefully.
--   **Subseries/Subepoch** rank (Quaternary/Neogene) not yet in the
-    level 0–6 column system.
+    Upper Pleistocene. Displayed via xlabels-en.ttl labels.
+-   **Subepoch/Subseries** rank now implemented (level 5.5) with 13
+    units across Holocene, Pleistocene, Pliocene, and Miocene. Units
+    were added manually (not from `chart.txt`, which lacks them). Colors
+    inherit from parent epochs. `parse-chart.cjs` updated to handle
+    `Subepoch` rank if it appears in future ICS data.
 -   **ICS colors** should be verified against current chart before
     export features are finalized.
 -   **Live API** at stratigraphy.org/chartdata — evaluate when live
     data updating becomes a priority.
 -   **ICS chart GitHub repo** cloned at
-    `C:\Users\scott.meek\Documents\ics-chart` — contains 26-language
-    label data (`source/multilang/chart-prefLabels.ttl`), English
-    definitions, and older `isc2020.ttl`.
+    `C:\Users\scott.meek\Documents\ics-chart`.
 
 ------------------------------------------------------------------------
 
@@ -300,17 +291,17 @@ declared after the render effect.
     `useEffect` — React executes effects in declaration order.
 9.  `xlabels-en.ttl` must have CRLF normalized to LF before block
     splitting (`replace(/\r\n/g, "\n")`).
-10. **Variable shadowing in block loop** — inner `x`/`width`/`y` names
-    inside the `visibleLevels.forEach` block shadowed outer SVG
-    `width`/`height`. Renamed to `colBandStart`/`colBandWidth`/`blockY`.
-    The shadow caused the viewport culling check to use ~80px instead of
-    the full SVG width, discarding nearly every block in horizontal mode.
-11. **Horizontal scroll transform mode** — `newTx = MARGIN - scrollLeft`
-    (was `(svgEl.clientWidth - MARGIN) - scrollLeft * k`).
-12. **Horizontal scroll dynamic mode** — `scrollLeft=0` = oldest content
-    (leftmost), so domain formula inverts:
-    `newMin = dynamicMax - visibleSpan - fraction * (fullSpan - visibleSpan)`.
-    Scroll sync fraction also inverts: `1 - (domain[0] - minAge) / ...`.
+10. **Variable shadowing in block loop** — renamed inner variables to
+    `colBandStart`/`colBandWidth`/`blockY` to avoid shadowing outer
+    SVG `width`/`height`.
+11. **Module-level IIFE for localStorage init** — parse once at import
+    time into `_initPrefs` / `_initUnitEdits`; feed into lazy `useState`
+    initializers. Avoids repeated JSON.parse on every state declaration.
+12. **`data-unit-id` on SVG rects** — enables O(1) hover lookup via
+    `e.target.getAttribute` without attaching per-element event listeners.
+13. **Horizontal orientation removal** — delete all orientation state,
+    ternaries, if/else branches, and renderer params. Do not hide or stub;
+    delete completely. Vertical values are hardcoded where ternaries were.
 
 ------------------------------------------------------------------------
 
@@ -319,127 +310,91 @@ declared after the render effect.
 ## Toolbar / Ribbon
 
 -   **Group related controls.** View and Columns are both "what you see"
-    controls; Display and Picks are both "how labels look." Consider
-    merging into fewer tabs with sections, or a persistent sidebar panel.
--   **Add keyboard shortcuts** — Ctrl+Z for reset zoom, R for rotate
-    orientation. Currently no discoverable keyboard access beyond
-    Ctrl+wheel zoom.
--   **Tab labels are doing too much** — "Display" tab handles 5 different
-    concerns. Consider icons alongside text or a two-level layout.
+    controls; Display and Picks are both "how labels look."
+-   **Add keyboard shortcuts** — Ctrl+Z for reset zoom, R for rotate.
+-   **Tab labels are doing too much** — "Display" tab handles 5 concerns.
 
 ## Navigation / Zoom
 
 -   **Zoom status indicator** — show current visible span ("Viewing
-    541–0 Ma") in a small strip. Users have no sense of position.
--   **Breadcrumb / context** — when zoomed into the Jurassic, show
-    "Mesozoic → Jurassic" somewhere. Standard in geological chart viewers.
+    541–0 Ma") in a small strip.
 -   **Named zoom shortcuts** — buttons/dropdown to jump to Phanerozoic,
-    Cenozoic, Mesozoic, Paleozoic. Especially useful for teaching.
--   **Double-click to zoom in** on a block — natural map-viewer behavior;
-    currently disabled.
--   **Minimap** — thin strip showing the full timeline with a viewport
-    rectangle for large-zoom navigation.
+    Cenozoic, Mesozoic, Paleozoic, Precambrian.
+-   **Double-click to zoom in** on a block — currently disabled.
+-   **Minimap** — thin strip showing full timeline with viewport rect.
 -   **Pan momentum / inertia** — coast to a stop after drag release.
 
 ## Block Labels
 
--   **Hide labels below a pixel threshold** — don't render label if
-    block height/width < fontSize × 1.5. Low effort, big visual gain.
 -   **Truncate with ellipsis** — SVG text doesn't clip automatically.
-    Use `textLength`/`lengthAdjust` or manual truncation when label
-    wider than block.
+    Use `textLength`/`lengthAdjust` or manual truncation.
 -   **Multi-line labels** — break long names onto two lines for tall
     blocks with narrow columns.
--   **Tooltips on hover** — floating `<div>` with full name, age range
-    ± uncertainty, GSSP/GSSA status, short code, stratigraphic name.
 
 ## Time Axis
 
--   **Adaptive tick spacing** — ticks should shift to 1 Ma or 0.1 Ma
-    intervals when zoomed into the Cenozoic. The `.ticks()` call fires
-    already; step just needs to feed `formatTickLabel` dynamically.
--   **Age uncertainty bands** — translucent bands at epoch boundaries on
-    the time axis when zoomed in enough to see them (uncertainty data
-    available for 104 units).
--   **Dual-axis option** — Ma on one side, Ga on the other, or an
-    absolute year (BCE) secondary label.
+-   **Adaptive tick spacing** — intervals should shift to 1 Ma or 0.1 Ma
+    when zoomed into the Cenozoic.
+-   **Age uncertainty bands** — translucent bands at epoch boundaries.
+-   **Dual-axis option** — Ma on one side, Ga on the other.
 
 ## Color & Visual Design
 
--   **Adjustable outline weight** — 0.5px outlines disappear when zoomed
-    out far. A slider from 0–2px would let users tune this.
--   **Color-blind safe palette** — alternative colors replacing
-    problematic hue pairs (red/green) with distinguishable alternatives.
--   **Opacity control per rank level** — coarser levels feel visually
-    noisy when many hierarchy levels are visible.
 -   **Highlight on hover** — brighten or outline a block on mouseover
-    for visual feedback before the tooltip appears.
--   **Direct color picker on block click** — clicking a block in the
-    chart should open the color picker for that unit directly.
+    for feedback alongside the tooltip.
+-   **Direct color picker on block click** — clicking a block opens the
+    color picker for that unit.
+-   **Adjustable outline weight** — slider 0–2px.
+-   **Color-blind safe palette** option.
 
 ## Data Editor
 
 -   **Export / import edits** — "Download edits as JSON" + "Load edits
-    from JSON." Session-only edits are the biggest current gap.
+    from JSON" for sharing/backup beyond localStorage.
 -   **Undo/redo per cell** — currently only "Reset All."
--   **Age input validation** — non-numeric or invalid ranges silently
-    accepted; add inline validation highlighting.
+-   **Age input validation** — add inline validation highlighting.
 
-## Export (Placeholder)
+## Export
 
--   **SVG** — serialize current SVG element to a Blob (full timeline or
-    viewport-only).
--   **PNG** — draw SVG to offscreen canvas, then `canvas.toBlob()`.
--   **Copy to clipboard** — `navigator.clipboard.write()` with PNG blob
-    for pasting into presentations.
 -   **Print stylesheet** — `@media print` to remove ribbon and render
     full timeline at defined page size.
+-   **Tooltip near edge detection** — flip tooltip position when cursor
+    is near right/bottom edge of viewport.
 
 ------------------------------------------------------------------------
 
 # Next Session Plan
 
-## Priority 1 — Verify Picks Bug Fixes
--   Confirm in browser that rounding is correct at all sigFig settings.
+## Priority 1 — Browser-verify Picks Bug Fixes
+-   Confirm rounding is correct at all sigFig settings.
 -   Confirm font size no longer shifts when sigFigs dropdown changes.
 
-## Priority 2 — Tooltip / Info Panel on Block Hover
--   Floating `<div>` driven by `mousemove` on the SVG (preferred over
-    SVG `<title>` for consistent cross-browser styling).
--   Show: full name, timescale & stratigraphic names if different, age
-    range with ± uncertainty, GSSP/GSSA status, short code.
--   Requires `hoverUnit` state + `data-unit-id` attribute on block rects,
-    and a lookup into `effectiveUnits` on mouseover.
+## Priority 2 — Tooltip Edge Detection
+-   Flip tooltip left/above when cursor is near right/bottom edge.
+-   Add GSSP/GSSA status and shortCode to tooltip content.
 
-## Priority 3 — Hide Labels on Sub-Threshold Blocks
--   Don't render label if block pixel size < fontSize × 1.5.
--   Add to `resolvedBlocks` push: include a `pixelSize` field and skip
-    label in `BlockRenderer.js` when below threshold.
+## Priority 3 — Highlight Block on Hover
+-   On `hoverUnit` change, brighten the hovered block rect (e.g. apply
+    a lighter fill or a thicker stroke) for visual feedback before the
+    tooltip appears. Since rects are imperative DOM, track by
+    `data-unit-id` and mutate directly on hover.
 
-## Priority 4 — Export Tab
--   SVG download of current view.
--   PNG rasterisation option.
--   Copy to clipboard option.
-
-## Priority 5 — Data Editor Persistence
--   JSON export/import of `unitEdits`, or auto-persist to `localStorage`.
-
-## Priority 6 — Adaptive Tick Spacing
+## Priority 4 — Adaptive Tick Spacing
 -   Pass dynamic `tickStep` back through `formatTickLabel` so intervals
     auto-adjust as zoom level changes.
 
-## Priority 7 — Named Zoom Shortcuts
+## Priority 5 — Named Zoom Shortcuts
 -   Dropdown or buttons in View tab: jump to full extent, Phanerozoic,
     Cenozoic, Mesozoic, Paleozoic, Precambrian.
 
-## Priority 8 — Scroll Sync Audit
+## Priority 6 — equalSize + Hidden Units
+-   Pass visible-only units to `buildScale("equalSize")`.
+
+## Priority 7 — Scroll Sync Audit
 -   Verify vertical transform mode `scrollTop ↔ ty` math at edge cases.
 
-## Priority 9 — Dynamic Mode Counter-Scale
--   Decide whether dynamic mode should scale text/strokes with zoom.
-
-## Priority 10 — equalSize + Hidden Units
--   Pass visible-only units to `buildScale("equalSize")`.
+## Priority 8 — Data Editor JSON Export/Import
+-   "Download edits as JSON" and "Load edits from JSON" buttons.
 
 ------------------------------------------------------------------------
 
@@ -449,22 +404,42 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-"Resume from 2026-03-25 state. Single-useEffect rendering pipeline
-intact. Both vertical and horizontal orientations working (horizontal
-block culling bug and scroll math were fixed this session). Dual zoom
-modes, four scale types, data editor with resizable sidebar, filter
-tree, scroll sync — all stable. geologicTime.json regenerated from ICS
-2024/12 with 178 units; fields include startUncertainty, endUncertainty,
-ratifiedGSSP (bool), ratifiedGSSA (bool), shortCode, order,
-displayNameStratigraphic (15 units). xlabels-en.ttl in scripts/ for
-dual-label parsing. Three-way naming toggle (Timescale / Stratigraphic /
-Both) applies to block labels and column headers. Auto text contrast
-(NTSC luminance) added to BlockRenderer with toggle. Counter-scale
-useEffect bug fixed (now declared after render effect). Picks column has
-two active bug fixes applied (rounding epsilon, counter-scale order) —
-verify in browser first. Next priority: verify picks fixes, then
-implement tooltips on block hover (floating div, hoverUnit state,
-data-unit-id on rects), then hide labels on sub-threshold blocks, then
-Export tab. Do not split the render useEffect."
+GeoTimeline — Resume from 2026-04-03 state.
+Stack: React 19 + D3 v7 + Vite. SVG-driven geologic timescale visualizer based on ICS 2024/12 data (178 units in src/data/geologicTime.json).
+Architecture — do not break these:
+
+Single useEffect owns all SVG construction (clear → rebuild). Do not split it.
+Second useEffect owns zoom/pan event binding. Third re-applies counter-scale after render (must be declared after render effect — React runs effects in declaration order).
+Two more useEffects manage scrollbar ↔ zoom sync. isScrollSyncing ref prevents feedback loops.
+Two localStorage save useEffects (gt_prefs and gt_unitEdits keys) run after the counter-scale effect.
+buildScale() is a pure function returning one of four scale implementations (linear, log, equalSize, eraEqual).
+computeLayout() accepts initialOffset so columns start after the MARGIN header zone.
+Layered SVG groups: backgroundLayer → blockLayer → picksLayer.
+ALL_UNITS / UNIT_MAP are module-level constants, not re-derived on render.
+_initPrefs / _initUnitEdits are module-level IIFEs that parse localStorage once; all useState calls use lazy initializers seeded from them.
+effectiveUnits = ALL_UNITS with unitEdits overlaid — used everywhere.
+isUnitVisible(unitId, hiddenUnits) walks ancestor chain so hiding a parent implicitly hides children.
+transformRef / visibleDomainRef / lateralOffsetRef hold latest values for closures (no stale-closure bugs).
+Block rects carry data-unit-id attributes for hover lookup.
+Orientation is vertical only — horizontal code fully deleted, no branches remain.
+Structural changes must be introduced in minimal deltas.
+
+Working features: Vertical orientation only. Dual zoom modes (transform / dynamic) with mode-switching that converts state representations without resetting. Four scale types. Scrollbar sync. Column resize handles (delta divided by zoom k). Sticky div-based column headers. Naming mode (Timescale / Stratigraphic / Both). Auto text contrast (NTSC luminance). Picks column with auto/manual mode, uncertainty display, sigFigs. Data editor sidebar (resizable, sortable, inline color picker). Filter tree (recursive, ancestor-aware). localStorage persistence for all UI preferences and unitEdits. Block hover tooltip (floating div, dark background, shows name/rank/age). Label suppression on sub-threshold blocks (block.height < fontSize × 1.5). Export tab (SVG download, PNG download, copy PNG to clipboard). Subepoch/Subseries rank (level 5.5, 13 units: 3 Holocene, 3 Pleistocene, 2 Pliocene, 3 Miocene) with re-parented daughter Ages.
+Known issues (unverified fixes applied):
+
+Picks rounding — epsilon fix applied to formatAge, needs browser verify.
+Font size shift on sigFigs change — counter-scale effect moved after render effect, needs browser verify.
+Scroll sync math in vertical transform mode may be imperfect at extremes.
+buildScale("equalSize") uses full dataset, not visible-only units.
+Lateral offset resets on zoom mode switch.
+Tooltip has no edge detection (may clip near right/bottom of viewport).
+
+Priority order for this session:
+
+Browser-verify the two Picks bug fixes.
+Tooltip edge detection + add GSSP/GSSA/shortCode to tooltip.
+Highlight block on hover (mutate rect stroke/fill directly via data-unit-id).
+Adaptive tick spacing.
+Named zoom shortcuts (View tab).
 
 ------------------------------------------------------------------------

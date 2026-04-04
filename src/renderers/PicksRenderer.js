@@ -12,30 +12,22 @@ function formatAge(age, sigFigs) {
 export function renderPicks({
   svg,
   column,
-  boundaryAges,   // [{age, uncertainty}]
+  boundaryAges,   // [{age, uncertainty, approximate}]
   scale,
-  orientation,
-  width,
   height,
   margin = 0,
   showUncertainty = false,
-  picksSigFigs = 3
+  picksSigFigs = 3,
+  fontSize = 10
 }) {
   // ===== Right border only =====
 
   const border2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
 
-  if (orientation === "vertical") {
-    border2.setAttribute("x1", column.end);
-    border2.setAttribute("x2", column.end);
-    border2.setAttribute("y1", margin);
-    border2.setAttribute("y2", height - margin);
-  } else {
-    border2.setAttribute("y1", column.end);
-    border2.setAttribute("y2", column.end);
-    border2.setAttribute("x1", margin);
-    border2.setAttribute("x2", width - margin);
-  }
+  border2.setAttribute("x1", column.end);
+  border2.setAttribute("x2", column.end);
+  border2.setAttribute("y1", margin);
+  border2.setAttribute("y2", height - margin);
 
   border2.setAttribute("stroke", "black");
   border2.setAttribute("stroke-width", "0.5");
@@ -45,21 +37,22 @@ export function renderPicks({
 
   // ===== Boundary Lines + Labels =====
 
-  boundaryAges.forEach(({ age, uncertainty }) => {
+  boundaryAges.forEach(({ age, uncertainty, approximate }) => {
 
     const pos = scale(age);
 
     // ---- Label ----
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
 
-    label.setAttribute("font-size", "10");
-    label.setAttribute("data-base-font-size", "10");
+    label.setAttribute("font-size", fontSize);
+    label.setAttribute("data-base-font-size", fontSize);
 
+    const approxText = (showUncertainty && approximate) ? "\u007E" : "";
     const ageText = formatAge(age, picksSigFigs);
     const uncText = (showUncertainty && uncertainty !== null)
       ? ` \u00B1${uncertainty}`
       : "";
-    label.textContent = ageText + uncText;
+    label.textContent = approxText + ageText + uncText;
 
     svg.appendChild(label); // temporarily append to measure
     const textWidth = label.getBBox().width;
@@ -71,33 +64,17 @@ export function renderPicks({
     // ---- Tick ----
     const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
 
-    if (orientation === "vertical") {
+    const tickEndX = column.end - labelPadding;
 
-      const tickEndX = column.end - labelPadding;
+    tick.setAttribute("x1", column.start);
+    tick.setAttribute("x2", tickEndX);
+    tick.setAttribute("y1", pos);
+    tick.setAttribute("y2", pos);
 
-      tick.setAttribute("x1", column.start);
-      tick.setAttribute("x2", tickEndX);
-      tick.setAttribute("y1", pos);
-      tick.setAttribute("y2", pos);
-
-      label.setAttribute("x", column.end - labelMargin);
-      label.setAttribute("y", pos);
-      label.setAttribute("dominant-baseline", "middle");
-      label.setAttribute("text-anchor", "end");
-
-    } else {
-
-      const tickEndY = column.end - labelPadding;
-
-      tick.setAttribute("y1", column.start);
-      tick.setAttribute("y2", tickEndY);
-      tick.setAttribute("x1", pos);
-      tick.setAttribute("x2", pos);
-
-      label.setAttribute("x", pos);
-      label.setAttribute("y", column.end - labelMargin);
-      label.setAttribute("text-anchor", "middle");
-    }
+    label.setAttribute("x", column.end - labelMargin);
+    label.setAttribute("y", pos);
+    label.setAttribute("dominant-baseline", "middle");
+    label.setAttribute("text-anchor", "end");
 
     tick.setAttribute("stroke", "black");
     tick.setAttribute("stroke-width", 1);

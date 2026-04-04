@@ -18,7 +18,7 @@ const AUDIT_PATH   = path.join(__dirname, "parse-audit.txt");
 
 // ───────────────────────────── rank mappings ─────────────────────────────
 // levelOrder stored in JSON (before App.jsx adjustments):
-//   Super-Eon:0  Eon:1  Era:2  Period:3  Sub-Period:3  Epoch:4  Age:5
+//   Super-Eon:0  Eon:1  Era:2  Period:3  Sub-Period:3  Epoch:4  Subepoch:4  Age:5
 const RANK_META = {
   "Super-Eon":  { levelOrder: 0, rankStrat: "Super-Eonothem" },
   "Eon":        { levelOrder: 1, rankStrat: "Eonothem"        },
@@ -26,6 +26,7 @@ const RANK_META = {
   "Period":     { levelOrder: 3, rankStrat: "System"          },
   "Sub-Period": { levelOrder: 3, rankStrat: "Subsystem"       },
   "Epoch":      { levelOrder: 4, rankStrat: "Series"          },
+  "Subepoch":   { levelOrder: 4, rankStrat: "Subseries"       },
   "Age":        { levelOrder: 5, rankStrat: "Stage"           },
 };
 
@@ -95,7 +96,7 @@ for (const rawBlock of blocks) {
   if (!block.includes("a skos:Concept")) continue;
 
   // rank — may be multi-line or list (e.g. "rank:Age ,\n    rank:Epoch")
-  const RANK_ORDER = ["Super-Eon","Eon","Era","Period","Sub-Period","Epoch","Age"];
+  const RANK_ORDER = ["Super-Eon","Eon","Era","Period","Sub-Period","Epoch","Subepoch","Age"];
   const rankSection = block.match(/gts:rank([\s\S]+?);/);
   if (!rankSection) continue;
   const rankValues = [...rankSection[1].matchAll(/rank:(\S+)/g)].map(r => r[1].replace(/[,;]/g,""));
@@ -115,22 +116,24 @@ for (const rawBlock of blocks) {
 
   // time:hasBeginning block
   const beginBlock = block.match(/time:hasBeginning\s*\[([\s\S]+?)\]/);
-  let start = null, startUncertainty = null;
+  let start = null, startUncertainty = null, startApproximate = false;
   if (beginBlock) {
     const mya = beginBlock[1].match(/ischart:inMYA\s+([\d.]+)/);
     const moe = beginBlock[1].match(/schema:marginOfError\s+([\d.]+)/);
     if (mya) start = parseFloat(mya[1]);
     if (moe) startUncertainty = parseFloat(moe[1]);
+    startApproximate = /skos:note\s+"uncertain"/.test(beginBlock[1]);
   }
 
   // time:hasEnd block
   const endBlock = block.match(/time:hasEnd\s*\[([\s\S]+?)\]/);
-  let end = null, endUncertainty = null;
+  let end = null, endUncertainty = null, endApproximate = false;
   if (endBlock) {
     const mya = endBlock[1].match(/ischart:inMYA\s+([\d.]+)/);
     const moe = endBlock[1].match(/schema:marginOfError\s+([\d.]+)/);
     if (mya) end = parseFloat(mya[1]);
     if (moe) endUncertainty = parseFloat(moe[1]);
+    endApproximate = /skos:note\s+"uncertain"/.test(endBlock[1]);
   }
 
   // sh:order
@@ -145,7 +148,7 @@ for (const rawBlock of blocks) {
   const colorMatch = block.match(/schema:color\s+"(#[0-9A-Fa-f]+)"/);
   const color = colorMatch ? colorMatch[1].toUpperCase() : null;
 
-  parsed.push({ id, rank, ratifiedGSSP, ratifiedGSSA, parent, labelEn, start, startUncertainty, end, endUncertainty, order, shortCode, color });
+  parsed.push({ id, rank, ratifiedGSSP, ratifiedGSSA, parent, labelEn, start, startUncertainty, startApproximate, end, endUncertainty, endApproximate, order, shortCode, color });
 }
 
 // ──────────────────────────── build lookup by id ────────────────────────────
@@ -258,8 +261,10 @@ const merged = parsed
       levelOrder:              meta.levelOrder !== undefined ? meta.levelOrder : (j.levelOrder ?? null),
       start:                   c.start !== null ? c.start : (j.start ?? null),
       startUncertainty:        c.startUncertainty,
+      startApproximate:        c.startApproximate,
       end:                     c.end !== null ? c.end : (j.end ?? null),
       endUncertainty:          c.endUncertainty,
+      endApproximate:          c.endApproximate,
       parent:                  c.parent,
       icsColor:                c.color || j.icsColor || null,
       ratifiedGSSP:            c.ratifiedGSSP,

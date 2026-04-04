@@ -1,25 +1,52 @@
 === ICS Chart Parse Audit ===
 chart.txt units parsed: 178
-geologicTime.json units: 178
+geologicTime.json units: 189
 xlabels-en.ttl dual-label units found: 185
 
+─── units in JSON not found in chart.txt ───
+  - LateHolocene  (Subepoch)
+  - MiddleHolocene  (Subepoch)
+  - EarlyHolocene  (Subepoch)
+  - LatePleistocene  (Subepoch)
+  - MiddlePleistocene  (Subepoch)
+  - EarlyPleistocene  (Subepoch)
+  - LatePliocene  (Subepoch)
+  - EarlyPliocene  (Subepoch)
+  - LateMiocene  (Subepoch)
+  - MiddleMiocene  (Subepoch)
+  - EarlyMiocene  (Subepoch)
+
 ─── Field differences for matched units ───
-  Aalenian:
-    displayName: JSON="Zanclean"  chart="Aalenian"
-  CambrianStage10:
-    displayName: JSON="Stage 10"  chart="Cambrian Stage 10"
-  CambrianStage2:
-    displayName: JSON="Stage 2"  chart="Cambrian Stage 2"
-  CambrianStage3:
-    displayName: JSON="Stage 3"  chart="Cambrian Stage 3"
-  CambrianStage4:
-    displayName: JSON="Stage 4"  chart="Cambrian Stage 4"
+  Aquitanian:
+    parent: JSON="EarlyMiocene"  chart="Miocene"
+  Burdigalian:
+    parent: JSON="EarlyMiocene"  chart="Miocene"
+  Calabrian:
+    parent: JSON="EarlyPleistocene"  chart="Pleistocene"
+  Chibanian:
+    parent: JSON="MiddlePleistocene"  chart="Pleistocene"
+  Gelasian:
+    parent: JSON="EarlyPleistocene"  chart="Pleistocene"
+  Greenlandian:
+    parent: JSON="EarlyHolocene"  chart="Holocene"
+  Langhian:
+    parent: JSON="MiddleMiocene"  chart="Miocene"
+  Meghalayan:
+    parent: JSON="LateHolocene"  chart="Holocene"
+  Messinian:
+    parent: JSON="LateMiocene"  chart="Miocene"
+  Northgrippian:
+    parent: JSON="MiddleHolocene"  chart="Holocene"
+  Piacenzian:
+    parent: JSON="LatePliocene"  chart="Pliocene"
+  Serravallian:
+    parent: JSON="MiddleMiocene"  chart="Miocene"
+  Tortonian:
+    parent: JSON="LateMiocene"  chart="Miocene"
   UpperPleistocene:
-    displayName: JSON="Late"  chart="Late Pleistocene"
-  LowerCretaceous:
-    displayName: JSON="Early"  chart="Early Cretaceous"
-  UpperCretaceous:
-    displayName: JSON="Late"  chart="Late Cretaceous"
+    parent: JSON="LatePleistocene"  chart="Pleistocene"
+  Zanclean:
+    parent: JSON="EarlyPliocene"  chart="Pliocene"
 
 ─── New field coverage in merged output ───
   total units:                178
