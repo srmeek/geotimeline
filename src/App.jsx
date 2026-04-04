@@ -1,8 +1,8 @@
 import { renderPicks } from "./renderers/PicksRenderer";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 
-import { renderBlocks } from "./renderers/BlockRenderer";
+import { renderBlocks, computeFitAndWrap } from "./renderers/BlockRenderer";
 import geologicTime from "./data/geologicTime.json";
 
 const ICS_MIN_AGE = 0;
@@ -25,6 +25,14 @@ const _initPrefs = (() => {
 })();
 const _initUnitEdits = (() => {
   try { return JSON.parse(localStorage.getItem("gt_unitEdits")) || {}; } catch { return {}; }
+})();
+
+const _initFromHash = (() => {
+  try {
+    const h = window.location.hash.slice(1);
+    if (!h) return null;
+    return JSON.parse(atob(h));
+  } catch { return null; }
 })();
 
 // Returns true if unit (by id) is not hidden by hiddenUnits or any ancestor
@@ -196,19 +204,23 @@ function App() {
   const svgRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const isScrollSyncing = useRef(false);
+  const minimapRef = useRef(null);
+  const importEditsRef = useRef(null);
+  const hashDebounceRef = useRef(null);
   const [scrollableSize, setScrollableSize] = useState(800);
+  const [showMinimap, setShowMinimap] = useState(() => _initPrefs.showMinimap ?? true);
 
   const [activeTab, setActiveTab] = useState("View");
 
   const _defaultColumnConfig = [
-    { level: 0, label: "Super-Eon", labelStrat: "Super-Eonothem", visible: true },
-    { level: 1, label: "Eon",       labelStrat: "Eonothem",       visible: true },
-    { level: 2, label: "Era",       labelStrat: "Erathem",        visible: true },
-    { level: 3, label: "Period",    labelStrat: "System",         visible: true },
-    { level: 4, label: "Subperiod", labelStrat: "Subsystem",      visible: true },
-    { level: 5,   label: "Epoch",    labelStrat: "Series",         visible: true },
-    { level: 5.5, label: "Subepoch",labelStrat: "Subseries",      visible: true },
-    { level: 6,   label: "Age",     labelStrat: "Stage",          visible: true }
+    { level: 0, label: "Super-Eon", labelStrat: "Super-Eonothem", visible: true, orientation: null, fontSize: null },
+    { level: 1, label: "Eon",       labelStrat: "Eonothem",       visible: true, orientation: null, fontSize: null },
+    { level: 2, label: "Era",       labelStrat: "Erathem",        visible: true, orientation: null, fontSize: null },
+    { level: 3, label: "Period",    labelStrat: "System",         visible: true, orientation: null, fontSize: null },
+    { level: 4, label: "Subperiod", labelStrat: "Subsystem",      visible: true, orientation: null, fontSize: null },
+    { level: 5,   label: "Epoch",    labelStrat: "Series",         visible: true, orientation: null, fontSize: null },
+    { level: 5.5, label: "Subepoch",labelStrat: "Subseries",      visible: true, orientation: null, fontSize: null },
+    { level: 6,   label: "Age",     labelStrat: "Stage",          visible: true, orientation: null, fontSize: null }
   ];
   const [columnConfig, setColumnConfig] = useState(() => {
     const saved = _initPrefs.columnConfig;
@@ -217,10 +229,10 @@ function App() {
     if (!saved.some(c => c.level === 5.5)) {
       const injected = [...saved];
       const ageIdx = injected.findIndex(c => c.level === 6);
-      injected.splice(ageIdx, 0, { level: 5.5, label: "Subepoch", labelStrat: "Subseries", visible: true });
-      return injected;
+      injected.splice(ageIdx, 0, { level: 5.5, label: "Subepoch", labelStrat: "Subseries", visible: true, orientation: null, fontSize: null });
+      return injected.map(c => ({ orientation: null, fontSize: null, ...c }));
     }
-    return saved;
+    return saved.map(c => ({ orientation: null, fontSize: null, ...c }));
   });
 
   const [columnWidths, setColumnWidths] = useState(() => {
@@ -231,18 +243,25 @@ function App() {
 
   const [timeUnit, setTimeUnit] = useState(() => _initPrefs.timeUnit ?? "Ma"); // "Ga" | "Ma" | "ka"
 
-  const [currentTransform, setCurrentTransform] = useState(d3.zoomIdentity);
-  const transformRef = useRef(d3.zoomIdentity);
+  const _hashTransform = (() => {
+    const h = _initFromHash?.currentTransform;
+    if (!h) return d3.zoomIdentity;
+    return d3.zoomIdentity.translate(h.x ?? 0, h.y ?? 0).scale(h.k ?? 1);
+  })();
+  const [currentTransform, setCurrentTransform] = useState(_hashTransform);
+  const transformRef = useRef(_hashTransform);
 
-  const [zoomMode, setZoomMode] = useState("transform"); // "transform" | "dynamic"
-  const [visibleDomain, setVisibleDomain] = useState([ICS_MIN_AGE, ICS_MAX_AGE]);
-  const visibleDomainRef = useRef([ICS_MIN_AGE, ICS_MAX_AGE]);
+  const [zoomMode, setZoomMode] = useState(_initFromHash?.zoomMode ?? "transform"); // "transform" | "dynamic"
+  const [visibleDomain, setVisibleDomain] = useState(_initFromHash?.visibleDomain ?? [ICS_MIN_AGE, ICS_MAX_AGE]);
+  const visibleDomainRef = useRef(_initFromHash?.visibleDomain ?? [ICS_MIN_AGE, ICS_MAX_AGE]);
   const zoomBehaviorRef = useRef(null);
   // lateralOffset: horizontal (x-axis) translation in dynamic mode, for panning perpendicular to the time axis
-  const [lateralOffset, setLateralOffset] = useState(0);
-  const lateralOffsetRef = useRef(0);
+  const [lateralOffset, setLateralOffset] = useState(_initFromHash?.lateralOffset ?? 0);
+  const lateralOffsetRef = useRef(_initFromHash?.lateralOffset ?? 0);
 
-  const [hiddenUnits, setHiddenUnits] = useState(() => new Set(_initPrefs.hiddenUnits ?? []));
+  const [hiddenUnits, setHiddenUnits] = useState(
+    () => new Set(_initFromHash?.hiddenUnits ?? _initPrefs.hiddenUnits ?? [])
+  );
   const [expandedNodes, setExpandedNodes] = useState(() => new Set());
   const [showDataEditor, setShowDataEditor] = useState(false);
   const [unitEdits, setUnitEdits] = useState(() => _initUnitEdits); // { [id]: { field: value, ... } }
@@ -291,7 +310,7 @@ function App() {
       const p2 = fullScale(domMax);
       const k  = (h - 2 * MARGIN) / (p2 - p1);
       const ty = MARGIN - p1 * k;
-      const newTransform = d3.zoomIdentity.translate(0, ty).scale(k);
+      const newTransform = d3.zoomIdentity.translate(lateralOffsetRef.current, ty).scale(k);
       transformRef.current = newTransform;
       setCurrentTransform(newTransform);
     } else {
@@ -309,9 +328,10 @@ function App() {
         setVisibleDomain([clampedMin, clampedMax]);
       }
       // Resize handles are positioned in document coords in dynamic mode (no transform applied)
+      const preservedLateral = transformRef.current.x || 0;
       setCurrentTransform(d3.zoomIdentity);
-      lateralOffsetRef.current = 0;
-      setLateralOffset(0);
+      lateralOffsetRef.current = preservedLateral;
+      setLateralOffset(preservedLateral);
     }
     setZoomMode(newMode);
   }
@@ -387,6 +407,35 @@ function App() {
     });
   }
 
+  function handleExportEdits() {
+    const json = JSON.stringify(unitEdits, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "geotimeline-edits.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportEdits(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (typeof parsed !== "object" || Array.isArray(parsed) || parsed === null) {
+          alert("Invalid edits file.");
+          return;
+        }
+        setUnitEdits(prev => ({ ...prev, ...parsed }));
+      } catch { alert("Failed to parse edits file."); }
+      if (importEditsRef.current) importEditsRef.current.value = "";
+    };
+    reader.readAsText(file);
+  }
+
   // Reset view whenever the set of hidden units changes
   useEffect(() => {
     if (zoomMode === "dynamic") {
@@ -403,6 +452,25 @@ function App() {
     }
   }, [hiddenUnits]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // URL hash state sync (debounced)
+  useEffect(() => {
+    if (hashDebounceRef.current) clearTimeout(hashDebounceRef.current);
+    hashDebounceRef.current = setTimeout(() => {
+      const payload = {
+        zoomMode,
+        visibleDomain: visibleDomainRef.current,
+        currentTransform: {
+          k: transformRef.current.k,
+          x: transformRef.current.x,
+          y: transformRef.current.y,
+        },
+        lateralOffset: lateralOffsetRef.current,
+        hiddenUnits: [...hiddenUnits],
+      };
+      window.history.replaceState(null, "", "#" + btoa(JSON.stringify(payload)));
+    }, 300);
+  }, [zoomMode, visibleDomain, currentTransform, lateralOffset, hiddenUnits]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleScroll(e) {
     if (isScrollSyncing.current) return;
     const container = e.currentTarget;
@@ -416,9 +484,8 @@ function App() {
 
     if (zoomMode === "transform") {
       const k = transformRef.current.k || 1;
-      // scrollTop=0 means top of content visible → ty = MARGIN
-      // scrollTop=max means bottom of content visible → content bottom at viewH
-      const newTy = MARGIN - scrollTop * (k - 1) / (scrollRange / viewH);
+      // Anchor: scrollTop=0 → timeline top at screen top; scrollTop=max → timeline bottom at screen bottom
+      const newTy = MARGIN * (1 - k) - scrollTop * (viewH - 2 * MARGIN) / viewH;
       const newTransform = d3.zoomIdentity
         .translate(transformRef.current.x || 0, newTy)
         .scale(k);
@@ -475,9 +542,71 @@ function App() {
   const [fontSize, setFontSize] = useState(() => _initPrefs.fontSize ?? 10);
   const [fontFamily, setFontFamily] = useState(() => _initPrefs.fontFamily ?? "Arial, sans-serif");
   const [labelOrientation, setLabelOrientation] = useState(() => _initPrefs.labelOrientation ?? "horizontal"); // "horizontal" | "vertical"
+  const [fontBold, setFontBold] = useState(() => _initPrefs.fontBold ?? false);
+  const [fontItalic, setFontItalic] = useState(() => _initPrefs.fontItalic ?? false);
+  const [fontUnderline, setFontUnderline] = useState(() => _initPrefs.fontUnderline ?? false);
+  const [showGSSP, setShowGSSP] = useState(() => _initPrefs.showGSSP ?? false);
+  const [fontRules, setFontRules] = useState(() => _initPrefs.fontRules ?? []);
+  // Each fontRule: { id: string, minAge: number, maxAge: number, fontSize: number }
 
   const [scaleType, setScaleType] = useState(() => _initPrefs.scaleType ?? "linear"); // "linear" | "log" | "equalSize" | "eraEqual"
   const [equalSizeLevel, setEqualSizeLevel] = useState(() => _initPrefs.equalSizeLevel ?? 3);
+
+  // Stable counter-scale function — reads all data from DOM attributes, only closes over svgRef (stable).
+  const applyCounterScale = useCallback((k) => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    const zoomLayerG = d3.select(svgEl).select("g");
+
+    zoomLayerG.selectAll("text").each(function () {
+      const el = this;
+      if (el.hasAttribute("data-block-w")) {
+        // Block label — recompute fit+wrap for the current zoom level
+        const blockW  = parseFloat(el.getAttribute("data-block-w"));
+        const blockH  = parseFloat(el.getAttribute("data-block-h"));
+        const userFS  = parseFloat(el.getAttribute("data-user-font-size") || "10");
+        const ff      = el.getAttribute("data-font-family") || "Arial, sans-serif";
+        const orient  = el.getAttribute("data-label-orient") || "horizontal";
+        const rawText = el.getAttribute("data-label") || "";
+        const words   = rawText.trim().split(/\s+/).filter(Boolean);
+        if (!words.length) return;
+
+        const screenW = blockW * k;
+        const screenH = blockH * k;
+        const [fitW, fitH] = orient === "vertical" ? [screenH, screenW] : [screenW, screenH];
+        const fitWords = orient === "vertical" ? [words.join(" ")] : words;
+
+        const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, ff, userFS, 5);
+        el.setAttribute("font-size",           String(fitSize / k));
+        el.setAttribute("data-base-font-size", String(fitSize));
+
+        const cx = el.getAttribute("x") || "0";
+        if (orient === "vertical") {
+          el.textContent = lines[0] || "";
+        } else {
+          while (el.firstChild) el.removeChild(el.firstChild);
+          const lineHZL   = fitSize * 1.2 / k;
+          const startDyZL = -(lines.length - 1) / 2 * lineHZL;
+          lines.forEach((line, i) => {
+            const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+            tspan.setAttribute("x",  cx);
+            tspan.setAttribute("dy", String(i === 0 ? startDyZL : lineHZL));
+            tspan.textContent = line;
+            el.appendChild(tspan);
+          });
+        }
+      } else {
+        // Standard counter-scale (tick labels, picks, GSSP markers)
+        const base = parseFloat(el.getAttribute("data-base-font-size") || "10");
+        el.setAttribute("font-size", base / k);
+      }
+    });
+
+    zoomLayerG.selectAll("[data-base-stroke]").each(function () {
+      const base = parseFloat(this.getAttribute("data-base-stroke") || "0.5");
+      this.setAttribute("stroke-width", base / k);
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [hoverUnit, setHoverUnit] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -555,8 +684,11 @@ function App() {
     if (scrollRange <= 0) return;
     let scrollTop;
     if (zoomMode === "transform") {
+      const k = currentTransform.k || 1;
       const ty = currentTransform.y || 0;
-      scrollTop = Math.max(0, Math.min(scrollRange, MARGIN - ty));
+      scrollTop = Math.max(0, Math.min(scrollRange,
+        (MARGIN * (1 - k) - ty) * viewH / (viewH - 2 * MARGIN)
+      ));
     } else {
       const fullSpan = dynamicMaxAge - dynamicMinAge;
       const visibleSpan = Math.max(0.001, visibleDomain[1] - visibleDomain[0]);
@@ -592,16 +724,20 @@ function App() {
 const backgroundLayer = zoomLayer.append("g");
 const blockLayer = zoomLayer.append("g");
 const picksLayer = zoomLayer.append("g");
+const gsspLayer = zoomLayer.append("g");
 
 const scaleDomain = zoomMode === "dynamic" ? visibleDomain : [dynamicMinAge, dynamicMaxAge];
 
     const allUnits = effectiveUnits;
+const scaleUnits = scaleType === "equalSize"
+  ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
+  : allUnits;
 
 const scale = buildScale(
   scaleType,
   scaleDomain,
   [MARGIN, height - MARGIN],
-  allUnits,
+  scaleUnits,
   equalSizeLevel
 );
 
@@ -839,6 +975,17 @@ visibleLevels.forEach(level => {
     // overflow issues at extreme zoom levels.
     if (Math.min(pos1, pos2) > height || Math.max(pos1, pos2) < 0) return;
 
+    const colConf = columnConfig.find(c => c.level === unit.levelOrder);
+    // Default: levels 0-3 → vertical, 4+ → horizontal
+    const blockOrientation = colConf?.orientation ?? (unit.levelOrder <= 3 ? "vertical" : "horizontal");
+    // Per-column font size, with font rules taking highest priority
+    const matchingRule = fontRules.find(r =>
+      unit.start !== null &&
+      unit.start <= r.maxAge &&
+      (unit.end ?? 0) >= r.minAge
+    );
+    const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+
     resolvedBlocks.push({
       unitId: unit.id,
       x: colBandStart,
@@ -854,7 +1001,11 @@ visibleLevels.forEach(level => {
         return ts;
       })(),
       labelX: labelColStart + labelColWidth / 2,
-      labelY: blockY + blockHeight / 2
+      labelY: blockY + blockHeight / 2,
+      labelOrientation: blockOrientation,
+      fontSize: blockFontSize,
+      ageStart: unit.start,
+      ageEnd: unit.end ?? 0,
     });
 
   });
@@ -867,7 +1018,11 @@ renderBlocks({
   fontSize,
   fontFamily,
   labelOrientation,
-  contrastText
+  contrastText,
+  currentK: zoomMode === "transform" ? (transformRef.current.k || 1) : 1,
+  fontBold,
+  fontItalic,
+  fontUnderline,
 });
 
 // ===== PICKS =====
@@ -889,7 +1044,26 @@ if (picksColumn && boundaryAges.length) {
 }
 
 
-  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits]);
+// ===== GSSP MARKERS =====
+if (showGSSP) {
+  allUnits
+    .filter(u => u.ratifiedGSSP === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+    .forEach(unit => {
+      const yPos = scale(unit.start);
+      if (yPos < 0 || yPos > height) return;
+      const marker = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      marker.setAttribute("x", timeColumn.end + 2);
+      marker.setAttribute("y", yPos);
+      marker.setAttribute("font-size", "8");
+      marker.setAttribute("data-base-font-size", "8");
+      marker.setAttribute("fill", "#DAA520");
+      marker.setAttribute("dominant-baseline", "middle");
+      marker.textContent = "▶";
+      gsspLayer.node().appendChild(marker);
+    });
+}
+
+  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits]);
 
   // Re-apply counter-scale after the render effect rebuilds the SVG (transform mode only).
   // MUST be declared after the render effect so React runs it second.
@@ -897,29 +1071,22 @@ if (picksColumn && boundaryAges.length) {
     if (zoomMode !== "transform") return;
     const k = transformRef.current.k;
     if (k === 1) return;
-    const svg = d3.select(svgRef.current);
-    const zoomLayerG = svg.select("g");
-    zoomLayerG.selectAll("text").each(function() {
-      const base = parseFloat(this.getAttribute("data-base-font-size") || "10");
-      this.setAttribute("font-size", base / k);
-    });
-    zoomLayerG.selectAll("[data-base-stroke]").each(function() {
-      const base = parseFloat(this.getAttribute("data-base-stroke") || "0.5");
-      this.setAttribute("stroke-width", base / k);
-    });
-  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits]);
+    applyCounterScale(k);
+  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits, applyCounterScale]);
 
   // Persist UI preferences
   useEffect(() => {
     const prefs = {
       timeUnit, columnConfig, columnWidths,
       labelMode, contrastText, fontSize, fontFamily, labelOrientation,
+      fontBold, fontItalic, fontUnderline, showGSSP, fontRules,
       scaleType, equalSizeLevel,
       picksMode, manualPicksLevel, showUncertainty, picksSigFigs,
       hiddenUnits: [...hiddenUnits],
+      showMinimap,
     };
     localStorage.setItem("gt_prefs", JSON.stringify(prefs));
-  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits]);
+  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, showMinimap]);
 
   useEffect(() => {
     localStorage.setItem("gt_unitEdits", JSON.stringify(unitEdits));
@@ -934,20 +1101,6 @@ if (picksColumn && boundaryAges.length) {
 
     const onContextMenu = (e) => e.preventDefault();
     svgElement.addEventListener("contextmenu", onContextMenu);
-
-    // Helper: apply counter-scaling so text and strokes stay constant screen size.
-    // Scoped to the zoomLayer (first <g>) only — header layer is outside and must not scale.
-    function applyCounterScale(k) {
-      const zoomLayerG = svg.select("g");
-      zoomLayerG.selectAll("text").each(function() {
-        const base = parseFloat(this.getAttribute("data-base-font-size") || "10");
-        this.setAttribute("font-size", base / k);
-      });
-      zoomLayerG.selectAll("[data-base-stroke]").each(function() {
-        const base = parseFloat(this.getAttribute("data-base-stroke") || "0.5");
-        this.setAttribute("stroke-width", base / k);
-      });
-    }
 
     if (zoomMode === "transform") {
       // ===== TRANSFORM MODE: D3 zoom handles pan + wheel =====
@@ -966,13 +1119,25 @@ if (picksColumn && boundaryAges.length) {
         });
 
       const onKeyDown = (event) => {
-        if (!event.ctrlKey) return;
-        const isZoomIn  = event.key === "+" || event.key === "=";
-        const isZoomOut = event.key === "-";
-        if (!isZoomIn && !isZoomOut) return;
+        if (event.ctrlKey) {
+          const isZoomIn  = event.key === "+" || event.key === "=";
+          const isZoomOut = event.key === "-";
+          if (!isZoomIn && !isZoomOut) return;
+          event.preventDefault();
+          svg.call(zoom.scaleBy, isZoomIn ? 1.5 : 1 / 1.5, [svgWidth / 2, svgHeight / 2]);
+          return;
+        }
+        const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+        if (!arrows.includes(event.key)) return;
         event.preventDefault();
-        const factor = isZoomIn ? 1.5 : 1 / 1.5;
-        svg.call(zoom.scaleBy, factor, [svgWidth / 2, svgHeight / 2]);
+        const { k, x: tx, y: ty } = transformRef.current;
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          const delta = (svgHeight * 0.1) * (event.key === "ArrowUp" ? 1 : -1);
+          svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty + delta).scale(k));
+        } else {
+          const delta = (svgWidth * 0.1) * (event.key === "ArrowLeft" ? 1 : -1);
+          svg.call(zoom.transform, d3.zoomIdentity.translate(tx + delta, ty).scale(k));
+        }
       };
 
       svgElement.onmousedown = () => { svgElement.style.cursor = "grabbing"; };
@@ -1082,13 +1247,33 @@ if (picksColumn && boundaryAges.length) {
       };
 
       const onKeyDown = (event) => {
-        if (!event.ctrlKey) return;
-        const isZoomIn  = event.key === "+" || event.key === "=";
-        const isZoomOut = event.key === "-";
-        if (!isZoomIn && !isZoomOut) return;
+        if (event.ctrlKey) {
+          const isZoomIn  = event.key === "+" || event.key === "=";
+          const isZoomOut = event.key === "-";
+          if (!isZoomIn && !isZoomOut) return;
+          event.preventDefault();
+          svg.call(zoom.scaleBy, isZoomIn ? 1.5 : 1 / 1.5, [svgWidth / 2, svgHeight / 2]);
+          return;
+        }
+        const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+        if (!arrows.includes(event.key)) return;
         event.preventDefault();
-        const factor = isZoomIn ? 1.5 : 1 / 1.5;
-        svg.call(zoom.scaleBy, factor, [svgWidth / 2, svgHeight / 2]);
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          const [vMin, vMax] = visibleDomainRef.current;
+          const span = vMax - vMin;
+          const shift = span * 0.1 * (event.key === "ArrowUp" ? -1 : 1);
+          let newMin = vMin + shift;
+          let newMax = vMax + shift;
+          if (newMin < dynamicMinAgeRef.current) { newMin = dynamicMinAgeRef.current; newMax = newMin + span; }
+          if (newMax > dynamicMaxAgeRef.current) { newMax = dynamicMaxAgeRef.current; newMin = Math.max(dynamicMinAgeRef.current, newMax - span); }
+          visibleDomainRef.current = [newMin, newMax];
+          setVisibleDomain([newMin, newMax]);
+        } else {
+          const delta = svgWidth * 0.1 * (event.key === "ArrowLeft" ? 1 : -1);
+          lateralOffsetRef.current += delta;
+          svg.select("g").attr("transform", `translate(${lateralOffsetRef.current}, 0)`);
+          setLateralOffset(lateralOffsetRef.current);
+        }
       };
 
       svgElement.addEventListener("mousedown", onMouseDown);
@@ -1106,6 +1291,87 @@ if (picksColumn && boundaryAges.length) {
       };
     }
   }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode]);
+
+  // Minimap drawing
+  useEffect(() => {
+    const canvas = minimapRef.current;
+    if (!canvas || !showMinimap) return;
+    const W = 55;
+    const H = canvas.offsetHeight || canvas.clientHeight || 400;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#f8f8f8";
+    ctx.fillRect(0, 0, W, H);
+
+    const miniScale = d3.scaleLinear().domain([ICS_MIN_AGE, ICS_MAX_AGE]).range([0, H]);
+
+    // Draw Era then Period blocks
+    [3, 2].forEach(targetLevel => {
+      effectiveUnits
+        .filter(u => u.levelOrder === targetLevel && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+        .forEach(u => {
+          const y1 = miniScale(u.end ?? 0);
+          const y2 = miniScale(u.start);
+          ctx.fillStyle = u.icsColor || "#ccc";
+          ctx.fillRect(0, Math.min(y1, y2), W, Math.abs(y2 - y1));
+        });
+    });
+
+    // Viewport indicator
+    let vpMin, vpMax;
+    if (zoomMode === "dynamic") {
+      [vpMin, vpMax] = visibleDomain;
+    } else {
+      const svgEl = svgRef.current;
+      const h = svgEl?.clientHeight || 600;
+      const k = currentTransform.k || 1;
+      const ty = currentTransform.y || 0;
+      const fullSc = d3.scaleLinear().domain([dynamicMinAge, dynamicMaxAge]).range([MARGIN, h - MARGIN]);
+      vpMin = fullSc.invert((MARGIN - ty) / k);
+      vpMax = fullSc.invert((h - MARGIN - ty) / k);
+    }
+    const vpY1 = miniScale(Math.max(ICS_MIN_AGE, Math.min(vpMin, vpMax)));
+    const vpY2 = miniScale(Math.min(ICS_MAX_AGE, Math.max(vpMin, vpMax)));
+    ctx.fillStyle = "rgba(30, 100, 220, 0.22)";
+    ctx.fillRect(0, vpY1, W, vpY2 - vpY1);
+    ctx.strokeStyle = "rgba(30, 100, 220, 0.75)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0, vpY1, W, vpY2 - vpY1);
+  }, [showMinimap, effectiveUnits, hiddenUnits, zoomMode, visibleDomain, currentTransform, dynamicMinAge, dynamicMaxAge]);
+
+  // Minimap click to navigate
+  useEffect(() => {
+    const canvas = minimapRef.current;
+    if (!canvas || !showMinimap) return;
+    const onClick = e => {
+      const rect = canvas.getBoundingClientRect();
+      const frac = (e.clientY - rect.top) / rect.height;
+      const clickAge = ICS_MIN_AGE + frac * (ICS_MAX_AGE - ICS_MIN_AGE);
+      if (zoomMode === "dynamic") {
+        const [vMin, vMax] = visibleDomainRef.current;
+        const span = vMax - vMin;
+        const newMin = Math.max(ICS_MIN_AGE, Math.min(ICS_MAX_AGE - span, clickAge - span / 2));
+        visibleDomainRef.current = [newMin, newMin + span];
+        setVisibleDomain([newMin, newMin + span]);
+      } else {
+        const svgEl = svgRef.current;
+        if (!svgEl) return;
+        const h = svgEl.clientHeight;
+        const k = transformRef.current.k || 1;
+        const fullSc = d3.scaleLinear().domain([dynamicMinAge, dynamicMaxAge]).range([MARGIN, h - MARGIN]);
+        const newTy = h / 2 - fullSc(clickAge) * k;
+        const newTransform = d3.zoomIdentity.translate(transformRef.current.x || 0, newTy).scale(k);
+        transformRef.current = newTransform;
+        setCurrentTransform(newTransform);
+        if (zoomBehaviorRef.current && svgEl) {
+          d3.select(svgEl).call(zoomBehaviorRef.current.transform, newTransform);
+        }
+      }
+    };
+    canvas.addEventListener("click", onClick);
+    return () => canvas.removeEventListener("click", onClick);
+  }, [showMinimap, zoomMode, dynamicMinAge, dynamicMaxAge]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{
@@ -1170,6 +1436,10 @@ if (picksColumn && boundaryAges.length) {
             </label>
 
             <button onClick={handleResetZoom}>Reset Zoom</button>
+            <label style={{ marginLeft: 8 }}>
+              <input type="checkbox" checked={showMinimap} onChange={e => setShowMinimap(e.target.checked)} />
+              {" "}Minimap
+            </label>
 
             <strong>Time Units:</strong>
             {["Ga", "Ma", "ka"].map(unit => (
@@ -1188,20 +1458,52 @@ if (picksColumn && boundaryAges.length) {
         )}
 
         {activeTab === "Columns" && (
-          <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
             {columnConfig.map((col, index) => (
-              <label key={col.level} style={{ marginRight: 10 }}>
+              <div key={col.level} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <input
                   type="checkbox"
                   checked={col.visible}
                   onChange={() => {
-                    const updated = [...columnConfig];
-                    updated[index].visible = !updated[index].visible;
+                    const updated = columnConfig.map((c, i) =>
+                      i === index ? { ...c, visible: !c.visible } : c
+                    );
                     setColumnConfig(updated);
                   }}
                 />
-                {col.label}
-              </label>
+                <span style={{ width: 80, fontSize: 12 }}>{col.label}</span>
+                <select
+                  value={col.orientation ?? "auto"}
+                  onChange={e => {
+                    const val = e.target.value === "auto" ? null : e.target.value;
+                    setColumnConfig(columnConfig.map((c, i) =>
+                      i === index ? { ...c, orientation: val } : c
+                    ));
+                  }}
+                  style={{ fontSize: 11 }}
+                >
+                  <option value="auto">Auto orient</option>
+                  <option value="horizontal">Horizontal</option>
+                  <option value="vertical">Vertical</option>
+                </select>
+                <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+                  Size:
+                  <input
+                    type="number"
+                    min={5}
+                    max={32}
+                    value={col.fontSize ?? ""}
+                    placeholder={String(fontSize)}
+                    onChange={e => {
+                      const val = e.target.value === "" ? null : Number(e.target.value);
+                      setColumnConfig(columnConfig.map((c, i) =>
+                        i === index ? { ...c, fontSize: val } : c
+                      ));
+                    }}
+                    style={{ width: 44, fontSize: 11 }}
+                  />
+                </label>
+              </div>
             ))}
           </div>
         )}
@@ -1336,6 +1638,10 @@ if (picksColumn && boundaryAges.length) {
               />
               {" "}Auto text contrast
             </label>
+            <label><input type="checkbox" checked={fontBold} onChange={e => setFontBold(e.target.checked)} />{" "}Bold</label>
+            <label><input type="checkbox" checked={fontItalic} onChange={e => setFontItalic(e.target.checked)} />{" "}Italic</label>
+            <label><input type="checkbox" checked={fontUnderline} onChange={e => setFontUnderline(e.target.checked)} />{" "}Underline</label>
+            <label><input type="checkbox" checked={showGSSP} onChange={e => setShowGSSP(e.target.checked)} />{" "}GSSP markers</label>
             <strong>Naming:</strong>
             {[
               { value: "timescale",    label: "Timescale" },
@@ -1381,6 +1687,24 @@ if (picksColumn && boundaryAges.length) {
                 ))}
               </select>
             )}
+            <div style={{ width: "100%", marginTop: 8, borderTop: "1px solid #ddd", paddingTop: 6 }}>
+              <strong style={{ fontSize: 11 }}>Font Size Rules (by age range):</strong>
+              {fontRules.map(rule => (
+                <div key={rule.id} style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4, fontSize: 11 }}>
+                  <input type="number" value={rule.minAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, minAge: Number(e.target.value) } : r))} style={{ width: 60 }} placeholder="Min Ma" />
+                  <span>–</span>
+                  <input type="number" value={rule.maxAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, maxAge: Number(e.target.value) } : r))} style={{ width: 60 }} placeholder="Max Ma" />
+                  <span>Ma,</span>
+                  <input type="number" value={rule.fontSize} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, fontSize: Number(e.target.value) } : r))} style={{ width: 44 }} min={5} max={32} placeholder="px" />
+                  <span>px</span>
+                  <button onClick={() => setFontRules(fontRules.filter(r => r.id !== rule.id))} style={{ fontSize: 10, padding: "1px 5px" }}>✕</button>
+                </div>
+              ))}
+              <button
+                onClick={() => setFontRules([...fontRules, { id: String(Date.now()), minAge: 0, maxAge: 66, fontSize: fontSize }])}
+                style={{ marginTop: 4, fontSize: 11, padding: "2px 8px" }}
+              >+ Add Rule</button>
+            </div>
           </div>
         )}
 
@@ -1458,6 +1782,13 @@ if (picksColumn && boundaryAges.length) {
                 Reset All Edits ({Object.keys(unitEdits).length})
               </button>
             )}
+            <button onClick={handleExportEdits} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer" }}>
+              Export Edits
+            </button>
+            <button onClick={() => importEditsRef.current?.click()} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer" }}>
+              Import Edits
+            </button>
+            <input ref={importEditsRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportEdits} />
           </div>
         )}
 
@@ -1604,6 +1935,22 @@ if (picksColumn && boundaryAges.length) {
                 />
               );
             })}
+            {showMinimap && (
+              <canvas
+                ref={minimapRef}
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: 0,
+                  width: 55,
+                  height: "100%",
+                  zIndex: 12,
+                  cursor: "pointer",
+                  pointerEvents: "auto",
+                  borderLeft: "1px solid #ccc",
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -1867,11 +2214,20 @@ if (picksColumn && boundaryAges.length) {
       </div>
 
       {/* Hover tooltip */}
-      {hoverUnit && (
+      {hoverUnit && (() => {
+        const TOOLTIP_W = 260;
+        const TOOLTIP_H = 90;
+        const tipLeft = tooltipPos.x + 14 + TOOLTIP_W > window.innerWidth
+          ? tooltipPos.x - 14 - TOOLTIP_W
+          : tooltipPos.x + 14;
+        const tipTop = tooltipPos.y + 14 + TOOLTIP_H > window.innerHeight
+          ? tooltipPos.y - 14 - TOOLTIP_H
+          : tooltipPos.y + 14;
+        return (
         <div style={{
           position: "fixed",
-          left: tooltipPos.x + 14,
-          top: tooltipPos.y + 14,
+          left: tipLeft,
+          top: tipTop,
           background: "rgba(0,0,0,0.82)",
           color: "white",
           padding: "6px 10px",
@@ -1896,7 +2252,8 @@ if (picksColumn && boundaryAges.length) {
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
