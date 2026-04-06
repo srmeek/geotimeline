@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-06 (session 4)*
+*Last Updated: 2026-04-06 (session 5)*
 
 ------------------------------------------------------------------------
 
@@ -10,6 +10,10 @@ Full rendering pipeline stable in canvas (dynamic) mode. ICS 2024/12 data
 (189 units). Dynamic zoom mode default. Canvas migration is complete through
 Phase 5. All rendering, export, and interaction features now work in dynamic
 mode. SVG/transform mode is preserved as a fallback.
+
+Session 5 focused entirely on fixing zoom and pan interactions across all
+scale modes (Linear, Log, Equal Size, Era Equal). Most of the rendering
+pipeline bugs are resolved; one pan snap issue on drag release remains.
 
 ------------------------------------------------------------------------
 
@@ -40,8 +44,17 @@ mode. SVG/transform mode is preserved as a fallback.
     → GSSP/GSSA markers.
 -   Accumulates `hitBoxes = []` per frame; written to `hitBoxesRef.current`
     at frame end for mousemove hit testing.
--   `BOTTOM_MARGIN = 8` — fixed constant for the bottom of the scale range.
-    Declared in the component body so drawFrame and event handlers share it.
+-   `BOTTOM_MARGIN` has been **removed from all drawFrame scale ranges and
+    culling guards** (still present in SVG/export path). Scale range is now
+    `[eM, viewH]`. Clip region prevents any overdraw below viewH.
+-   **DPR reset each frame**: `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` is
+    called unconditionally after `ctx.restore()`, before drawing. This ensures
+    DPR scaling is never dependent on the save/restore stack.
+-   **Clip region**: `ctx.save()` / `ctx.clip()` to `[0, 0, cssW, viewH]`
+    wraps each frame. `ctx.restore()` pops it at frame end.
+-   **Canvas backing store** sized to `viewH * dpr` (not `cssH * dpr`).
+    `cssH = canvas.clientHeight` resolves to the full scrollable extent;
+    using `viewH` prevents the backing store from growing to thousands of pixels.
 
 ## Viewport Height Fix
 
@@ -89,14 +102,38 @@ mode. SVG/transform mode is preserved as a fallback.
 
 -   **Wheel zoom** (`ctrlKey` = true): synchronous — updates `visibleDomainRef`
     directly (no RAF batching). `h = scrollContainerRef.current.clientHeight`
-    for correct pct / focal age calculation.
--   **Wheel pan** (`ctrlKey` = false): RAF-batched via `commitDomain()`.
-    `agePerPx = span / (h - eM - BOTTOM_MARGIN)` using viewport height.
--   **Drag pan**: `refScale.range([eM, liveH - BOTTOM_MARGIN])` using viewport
-    height. Computes "what age was at pixel `eM - dy`."
+    for correct focal age calculation.
+-   **Wheel pan** (`ctrlKey` = false): pure pixel arithmetic —
+    `shift = panDelta * (span / viewportPx)` where `viewportPx = h - eM`.
+    Scale-type-invariant; no `buildScale` call.
+-   **Drag pan**: ref-only updates during drag (`visibleDomainRef.current` only,
+    no `commitDomain`/`setVisibleDomain`). Single `setVisibleDomain` flush on
+    `mouseUp`. `shift = -dy * (span / viewportPx)`.
+-   **Scroll suppression during drag**: `isScrollSyncing.current = true` on
+    `mouseDown`, deferred `false` via `setTimeout(0)` after `setVisibleDomain`
+    on `mouseUp` (to cover the async scroll event from scroll-sync useEffect).
 -   **Progressive zoom speed**: `speedScale = (span/fullSpan)^0.2`.
--   **Focal age**: `focalAge = refMin + pct * span` where
-    `pct = (cursorY - eM) / (h - eM - BOTTOM_MARGIN)`.
+-   **Focal age (linear/log)**: `buildScale().invert(cursorY)` with correct
+    `[eM, h]` range.
+-   **Focal age (equalSize/eraEqual)**: virtual-canvas invert — builds
+    `fullScale` over `[fullMin, fullMax]` → `[0, virtualH]`, applies
+    `pixelOffset = fullScale(refMin)`, then
+    `focalAge = fullScale.invert(cursorY - eM + pixelOffset)`.
+
+## Equal Size / Era Equal Scale Architecture
+
+Fixed-partition scales — all slots (or all 4 eras) are always laid out
+equally across the full virtual height. Zooming is handled by narrowing
+`[vMin, vMax]` and translating the virtual canvas, NOT by filtering slots.
+
+-   **drawFrame scale construction**: for `equalSize`/`eraEqual`, builds
+    `fullScale` over `[dynamicMinAge, dynamicMaxAge]` → `[0, virtualH]` where
+    `virtualH = (viewH - eM) * (fullSpan / visSpan)`. Then:
+    `scale = age => fullScale(age) - fullScale(vMin) + eM`.
+-   **buildSVGForExport**: same virtual-canvas pattern using `dynamicMinAge`/
+    `dynamicMaxAge` component variables.
+-   **buildScale itself is stateless w.r.t. zoom** — `domain` param is used
+    only for tick filtering, not slot layout.
 
 ## Hit Testing (Tooltip)
 
@@ -289,10 +326,22 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 
 # Known Issues
 
-1.  **Zoom not anchoring to cursor** — `focalAge = refMin + pct * span`
-    (linear interpolation in age-space). Mathematically correct for linear
-    scale; approximate for equalSize/eraEqual. May feel slightly off at
-    high zoom on non-linear scales.
+1.  **Drag pan snap/stretch on release** — on `mouseUp`, `setVisibleDomain`
+    triggers the scroll-sync `useEffect`, which sets `container.scrollTop`.
+    That scroll assignment fires `handleScroll` asynchronously. The
+    `isScrollSyncing` guard uses `setTimeout(0)` to defer the reset, but
+    this does not reliably cover the async scroll event in all browsers.
+    `handleScroll` then overwrites `visibleDomainRef` with a scroll-derived
+    value that doesn't match where the drag ended — causing a visible snap.
+    **Root cause**: `isScrollSyncing` is set and cleared synchronously inside
+    the scroll-sync `useEffect` (`true` → `container.scrollTop =` → `false`),
+    so `handleScroll` (which fires from the native scroll event, asynchronously)
+    always sees `isScrollSyncing = false`. The `setTimeout(0)` in `onMouseUp`
+    doesn't help because the sync `useEffect` has already cleared the flag.
+    **Next approach**: Either (a) remove `handleScroll` from dynamic mode
+    entirely (scroll events should not drive `visibleDomain` in dynamic mode —
+    the scrollbar is decorative/indicator-only), or (b) track `isDragging` as
+    a separate ref and check it in `handleScroll`.
 
 2.  **Picks rounding** — epsilon fix applied to `formatAge`; needs browser verify.
 
@@ -300,9 +349,9 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
     custom web fonts; system fonts (Arial etc.) are safe.
 
 4.  **Scroll sync formula uses symmetric margin** — forward/reverse scroll
-    sync formulas still use `2 * eM` (symmetric), but scale range now uses
-    `eM + BOTTOM_MARGIN`. Minor inconsistency in transform mode scroll sync;
-    not visible in practice since dynamic mode is the default.
+    sync formulas still use `2 * eM` (symmetric), but top/bottom margins are
+    now asymmetric. Minor inconsistency in transform mode; not visible in
+    practice since dynamic mode is the default.
 
 ------------------------------------------------------------------------
 
@@ -336,8 +385,10 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 12. Separate top and bottom margins: `eM = headerHeight + 8` (top only);
     `BOTTOM_MARGIN = 8` (fixed). Using `eM` for both causes footer drift
     when header height changes.
-13. For zoom focal age, use `refMin + pct * span` — do NOT use
-    `scale.invert(cursorY)` for equalSize/eraEqual scale types.
+13. For zoom focal age on equalSize/eraEqual, use the virtual-canvas invert
+    (`fullScale.invert(cursorY - eM + pixelOffset)`). Do NOT use
+    `buildScale([vMin,vMax],...).invert()` — that domain is wrong for fixed
+    partition scales.
 14. Zoom must be synchronous (no RAF) so consecutive wheel events each
     read the correct updated domain.
 15. Pan and zoom wheel deltas must be separated (pan uses 4× amplification).
@@ -348,6 +399,19 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 18. SVG export from canvas state: `buildSVGForExport()` reads refs at
     call time — same pattern as drawFrame. Must set explicit `width`/
     `height` SVG attributes for clean serialization.
+19. Wheel/drag pan should use pure pixel arithmetic: `shift = delta * (span /
+    viewportPx)`. Calling `buildScale([vMin,vMax],...).invert()` for pan is
+    wrong for fixed-partition scales and fragile for log.
+20. `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` each frame is the only reliable
+    way to apply DPR scaling — `ctx.scale(dpr,dpr)` inside the resize branch
+    is lost when `ctx.restore()` pops the stack on subsequent frames.
+21. Canvas backing store must be sized to `viewH * dpr`, not `cssH * dpr`.
+    `canvas.clientHeight` returns the full scrollable extent (thousands of px
+    when zoomed) because the canvas is inside a sticky wrapper in a tall spacer.
+22. `isScrollSyncing` set synchronously inside scroll-sync useEffect provides
+    no protection against the native `scroll` event, which fires asynchronously
+    after `container.scrollTop` is assigned. In dynamic mode, `handleScroll`
+    should not drive `visibleDomain` at all — the scrollbar is an indicator.
 
 ------------------------------------------------------------------------
 
@@ -374,7 +438,8 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Canvas migration complete (Phases 1–5).
+GeoTimeline — Canvas migration complete (Phases 1–5). Zoom/pan interactions
+fixed for all scale modes in session 5.
 Stack: React 19 + D3 v7 + Vite. Geologic timescale visualizer.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).
 Dynamic mode (canvas + rAF loop) is the default and primary rendering path.
@@ -384,13 +449,28 @@ See PROJECT_STATE.md for full architecture, feature status, and lessons.
 
 Architecture constraints (never break):
 - buildScale() and computeLayout() are pure functions.
+- buildScale() is stateless w.r.t. zoom — never filter slots by visible domain.
 - All React state and refs unchanged — canvas reads from refs in rAF loop.
 - No setState during zoom gestures — visibleDomainRef.current only.
+- No setState during drag pan — ref-only; single flush on mouseUp.
 - Single rAF loop owns all canvas drawing (drawFrame useCallback).
 - effectiveMarginRef.current = headerHeight + 8 (TOP margin only).
-- BOTTOM_MARGIN = 8 — fixed bottom margin constant in component body.
+- BOTTOM_MARGIN = 8 still exists but is NOT used in drawFrame scale ranges
+  or culling (removed in session 5). Still used in SVG/export path.
 - viewH = scrollContainerRef.current.clientHeight (NOT canvas.clientHeight).
+- Canvas backing store sized to viewH*dpr (not cssH*dpr).
+- ctx.setTransform(dpr,0,0,dpr,0,0) applied every frame (not only on resize).
+- Clip region [0,0,cssW,viewH] set via ctx.save()/ctx.clip() each frame.
+- equalSize/eraEqual scale in drawFrame: virtual-canvas pattern —
+  fullScale over [fullMin,fullMax]→[0,virtualH], offset by fullScale(vMin).
+- Wheel/drag pan: pure pixel arithmetic, no buildScale call.
 - hitBoxesRef populated each frame for tooltip hit testing.
 - Export: buildSVGForExport() for SVG, buildCanvasPNGBlob() for PNG.
+- isScrollSyncing does NOT reliably block handleScroll in dynamic mode.
+  Priority fix: remove handleScroll's domain-write in dynamic mode entirely.
+
+Open issue: drag pan snaps/stretches on release (handleScroll overwrites
+domain after setVisibleDomain triggers scroll-sync useEffect on mouseUp).
+Fix: check isDragging ref in handleScroll, or skip domain write in dynamic mode.
 
 ------------------------------------------------------------------------

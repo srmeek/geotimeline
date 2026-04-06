@@ -258,14 +258,17 @@ function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
   }
 
   if (scaleType === "eraEqual") {
-    const eras = [
+    const allEras = [
       { name: "Cenozoic",     start: 66,       end: 0 },
       { name: "Mesozoic",     start: 251.902,  end: 66 },
       { name: "Paleozoic",    start: 538.8,    end: 251.902 },
       { name: "Precambrian",  start: 4567.30,  end: 538.8 }
     ];
+
+    const eras = allEras;
+
     const rangeSize = Math.abs(range[1] - range[0]);
-    const eraHeight = rangeSize / 4;
+    const eraHeight = rangeSize / eras.length;
 
     const fn = age => {
       for (let i = 0; i < eras.length; i++) {
@@ -280,9 +283,9 @@ function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
     };
     fn.invert = pixel => {
       const relPos = (pixel - range[0]) / (range[1] - range[0]);
-      const eraIndex = Math.min(Math.floor(relPos * 4), 3);
-      const eraFraction = (relPos * 4) - eraIndex;
-      if (eraIndex < 0) return 0;
+      const eraIndex = Math.min(Math.floor(relPos * eras.length), eras.length - 1);
+      const eraFraction = (relPos * eras.length) - eraIndex;
+      if (eraIndex < 0) return domain[0];
       const era = eras[eraIndex];
       return era.end + eraFraction * (era.start - era.end);
     };
@@ -496,7 +499,21 @@ function App() {
       ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
       : allUnits;
 
-    const scale = buildScale(scaleType, [vMin, vMax], [eM, viewH - BOTTOM_MARGIN], scaleUnits, equalSizeLevel);
+    let scale;
+    if (scaleType === "equalSize" || scaleType === "eraEqual") {
+      const fullMin = dynamicMinAge;
+      const fullMax = dynamicMaxAge;
+      const visSpan = Math.max(vMax - vMin, 0.001);
+      const fullSpan = Math.max(fullMax - fullMin, 0.001);
+      const viewportH = viewH - eM - BOTTOM_MARGIN;
+      const virtualH = viewportH * (fullSpan / visSpan);
+      const fullScale = buildScale(scaleType, [fullMin, fullMax], [0, virtualH], scaleUnits, equalSizeLevel);
+      const pixelOffset = fullScale(vMin);
+      scale = age => fullScale(age) - pixelOffset + eM;
+      scale.invert = px => fullScale.invert(px - eM + pixelOffset);
+    } else {
+      scale = buildScale(scaleType, [vMin, vMax], [eM, viewH - BOTTOM_MARGIN], scaleUnits, equalSizeLevel);
+    }
 
     const svgD3 = d3.select(svgEl);
     const zoomLayer     = svgD3.append("g").attr("transform", `translate(${lateral},0)`);
@@ -1079,13 +1096,22 @@ function App() {
     const viewH = scrollContainerRef.current?.clientHeight ?? cssH;
 
     // Resize canvas backing store if needed (handles window resize)
-    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+    const needsResize = canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(viewH * dpr);
+    if (needsResize) {
       canvas.width  = Math.round(cssW * dpr);
-      canvas.height = Math.round(cssH * dpr);
-      ctx.scale(dpr, dpr);
+      canvas.height = Math.round(viewH * dpr);
     }
 
+    // Reset context completely each frame: clear transform stack, re-apply DPR scale,
+    // then set a clip region so nothing renders outside the visible viewport.
+    // ctx.restore() on an empty stack is a no-op in all browsers.
+    ctx.restore();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, viewH);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, cssW, viewH);
+    ctx.clip();
 
     const eM      = effectiveMarginRef.current;
     const [vMin, vMax] = visibleDomainRef.current;
@@ -1103,7 +1129,21 @@ function App() {
     ];
     const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
 
-    const scale = buildScale(scaleType, [vMin, vMax], [eM, viewH - BOTTOM_MARGIN], allUnits, equalSizeLevel);
+    let scale;
+    if (scaleType === "equalSize" || scaleType === "eraEqual") {
+      const fullMin = dynamicMinAgeRef.current;
+      const fullMax = dynamicMaxAgeRef.current;
+      const visSpan = Math.max(vMax - vMin, 0.001);
+      const fullSpan = Math.max(fullMax - fullMin, 0.001);
+      const viewportH = viewH - eM;
+      const virtualH = viewportH * (fullSpan / visSpan);
+      const fullScale = buildScale(scaleType, [fullMin, fullMax], [0, virtualH], allUnits, equalSizeLevel);
+      const pixelOffset = fullScale(vMin);
+      scale = age => fullScale(age) - pixelOffset + eM;
+      scale.invert = px => fullScale.invert(px - eM + pixelOffset);
+    } else {
+      scale = buildScale(scaleType, [vMin, vMax], [eM, viewH], allUnits, equalSizeLevel);
+    }
 
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, cssW, viewH);
@@ -1249,7 +1289,7 @@ function App() {
     if (timeColumn) {
       // White background for time column
       ctx.fillStyle = "white";
-      ctx.fillRect(timeColumn.start + lateral, eM, timeColumn.width, viewH - eM - BOTTOM_MARGIN);
+      ctx.fillRect(timeColumn.start + lateral, eM, timeColumn.width, viewH - eM);
 
       const tickValues = d3.scaleLinear().domain([vMin, vMax]).ticks(40);
       if (tickValues.length) {
@@ -1258,7 +1298,7 @@ function App() {
           ? Math.abs(tickValues[1] - tickValues[0])
           : Math.max(0.001, tickSpan / 20);
 
-        const targetLabels = Math.max(4, Math.floor((viewH - eM - BOTTOM_MARGIN) / (fontSize * 2.5)));
+        const targetLabels = Math.max(4, Math.floor((viewH - eM) / (fontSize * 2.5)));
         const majorEvery   = Math.max(1, Math.round(tickValues.length / targetLabels));
         const majorTicks   = tickValues.filter((_, i) => i % majorEvery === 0);
 
@@ -1277,7 +1317,7 @@ function App() {
         ctx.lineWidth = 0.7;
         minorTicks.forEach(age => {
           const pos = scale(age);
-          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          if (pos < eM - 2 || pos > viewH + 2) return;
           const tx = timeColumn.end + lateral;
           ctx.beginPath();
           ctx.moveTo(tx - 5, pos);
@@ -1293,7 +1333,7 @@ function App() {
         ctx.lineWidth = 1;
         majorTicks.forEach(age => {
           const pos = scale(age);
-          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          if (pos < eM - 2 || pos > viewH + 2) return;
           const tx = timeColumn.end + lateral;
           ctx.strokeStyle = "black";
           ctx.beginPath();
@@ -1388,7 +1428,7 @@ function App() {
 
       boundaryAges.forEach(({ age, uncertainty, approximate }) => {
         const pos = scale(age);
-        if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+        if (pos < eM - 2 || pos > viewH + 2) return;
 
         const approxText = (showUncertainty && approximate) ? "\u007E" : "";
         const ageText = formatAge(age);
@@ -1426,7 +1466,7 @@ function App() {
         .filter(u => u.ratifiedGSSP === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
         .forEach(unit => {
           const pos = scale(unit.start);
-          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          if (pos < eM - 2 || pos > viewH + 2) return;
           ctx.fillText("▶", markerX, pos);
         });
 
@@ -1436,11 +1476,12 @@ function App() {
         .filter(u => u.ratifiedGSSA === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
         .forEach(unit => {
           const pos = scale(unit.start);
-          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          if (pos < eM - 2 || pos > viewH + 2) return;
           ctx.fillText("⏱", markerX + 12, pos);
         });
     }
 
+    ctx.restore(); // remove clip region
     hitBoxesRef.current = hitBoxes;
     rafHandleRef.current = requestAnimationFrame(drawFrame);
   }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel, fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules, labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2100,9 +2141,22 @@ if (showGSSP && picksColumn) {
         if (e.ctrlKey) {
           if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 
-          const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
-          const pct      = Math.max(0, Math.min(1, (cursorY - eM) / (h - eM - BOTTOM_MARGIN)));
-          const focalAge = refMin + pct * span;
+          const cursorY = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
+          let focalAge;
+          if (scaleType === "equalSize" || scaleType === "eraEqual") {
+            const fullMin = dynamicMinAgeRef.current;
+            const fullMax = dynamicMaxAgeRef.current;
+            const fullSpan = Math.max(fullMax - fullMin, 0.001);
+            const viewportPx = Math.max(1, h - eM);
+            const virtualH = viewportPx * (fullSpan / Math.max(span, 0.001));
+            const fullScale = buildScale(scaleType, [fullMin, fullMax], [0, virtualH], effectiveUnits, equalSizeLevel);
+            const pixelOffset = fullScale(refMin);
+            focalAge = fullScale.invert(Math.max(eM, Math.min(h, cursorY)) - eM + pixelOffset);
+          } else {
+            const directScale = buildScale(scaleType, [refMin, refMax], [eM, h], effectiveUnits, equalSizeLevel);
+            focalAge = directScale.invert(Math.max(eM, Math.min(h, cursorY)));
+          }
+          const pct = span > 0 ? (focalAge - refMin) / span : 0.5;
 
           const fullSpan   = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
           const speedScale = Math.pow(span / fullSpan, 0.2);
@@ -2120,8 +2174,8 @@ if (showGSSP && picksColumn) {
             visibleDomainRef.current = [newMin, newMax];
           }
         } else {
-          const agePerPx = span / (h - eM - BOTTOM_MARGIN);
-          const shift    = panDelta * agePerPx;
+          const viewportPx = Math.max(1, h - eM);
+          const shift = panDelta * (span / viewportPx);
           const [newMin, newMax] = clampDomain(refMin + shift, refMax + shift, span);
           commitDomain(newMin, newMax);
         }
@@ -2141,6 +2195,7 @@ if (showGSSP && picksColumn) {
           domain: [...visibleDomainRef.current],
           lateral: lateralOffsetRef.current
         };
+        isScrollSyncing.current = true;
         canvasEl.style.cursor = "grabbing";
       };
 
@@ -2153,13 +2208,13 @@ if (showGSSP && picksColumn) {
         const [refMin, refMax] = pan.domain;
         const eM = effectiveMarginRef.current;
         const liveH = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
-        const refScale = d3.scaleLinear()
-          .domain([refMin, refMax])
-          .range([eM, liveH - BOTTOM_MARGIN]);
-        const newMin = refScale.invert(eM - dy);
         const span = refMax - refMin;
-        const [clampedMin, clampedMax] = clampDomain(newMin, newMin + span, span);
-        if (clampedMin < clampedMax) commitDomain(clampedMin, clampedMax);
+        const viewportPx = Math.max(1, liveH - eM);
+        const shift = -dy * (span / viewportPx);
+        const [clampedMin, clampedMax] = clampDomain(refMin + shift, refMax + shift, span);
+        if (clampedMin < clampedMax) {
+          visibleDomainRef.current = [clampedMin, clampedMax]; // ref-only: rAF picks it up next frame
+        }
 
         // Lateral pan (perpendicular to time axis)
         const newLateral = pan.lateral + dx;
@@ -2168,6 +2223,15 @@ if (showGSSP && picksColumn) {
       };
 
       const onMouseUp = () => {
+        if (pan) {
+          // Keep isScrollSyncing true through the async scroll event that fires
+          // when setVisibleDomain triggers the scroll-sync effect.
+          // setTimeout(0) clears it after that scroll event has been handled.
+          setVisibleDomain([...visibleDomainRef.current]);
+          setTimeout(() => { isScrollSyncing.current = false; }, 0);
+        } else {
+          isScrollSyncing.current = false;
+        }
         pan = null;
         canvasEl.style.cursor = "grab";
       };
@@ -2221,7 +2285,7 @@ if (showGSSP && picksColumn) {
         window.removeEventListener("keydown", onKeyDown);
       };
     }
-  }, [columnConfig, columnWidths, zoomMode]);
+  }, [columnConfig, columnWidths, zoomMode, scaleType, equalSizeLevel]);
 
   // Recursive tree renderer — shows all non-stage units with toggle checkboxes
   function renderUnitTree(parentId, depth) {
