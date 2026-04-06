@@ -763,119 +763,6 @@ function App() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Canvas draw function (Phase 1: rectangles only) ──
-  const drawFrame = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const cssW = canvas.clientWidth;
-    const cssH = canvas.clientHeight;
-
-    // Resize canvas backing store if needed (handles window resize)
-    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
-      canvas.width  = Math.round(cssW * dpr);
-      canvas.height = Math.round(cssH * dpr);
-      ctx.scale(dpr, dpr);
-    }
-
-    ctx.clearRect(0, 0, cssW, cssH);
-
-    const eM      = effectiveMarginRef.current;
-    const [vMin, vMax] = visibleDomainRef.current;
-    const lateral = lateralOffsetRef.current;
-
-    // Build scale from current visible domain
-    const allUnits    = effectiveUnits;
-    const visibleSet  = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
-
-    const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
-    const cols = [
-      { id: "time", type: "time" },
-      ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
-      { id: "picks", type: "picks" },
-    ];
-    const layout = computeLayout(cols, effectiveColumnWidths, MARGIN);
-
-    const scale = buildScale(scaleType, [vMin, vMax], [eM, cssH - eM], allUnits, equalSizeLevel);
-
-    // Draw white background
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, cssW, cssH);
-
-    // Draw each visible block as a filled rectangle with a 0.5px border
-    visLevels.forEach(level => {
-      const levelUnits = allUnits.filter(u =>
-        u.levelOrder === level &&
-        u.start !== null &&
-        visibleSet.has(u.id)
-      ).map(u => ({ ...u, end: u.end ?? 0 }));
-
-      levelUnits.forEach(unit => {
-        const currentIndex = visLevels.indexOf(level);
-        const unitMap = UNIT_MAP;
-
-        let spanStartIndex = currentIndex;
-        let hasVisibleParent = false;
-        let parentId = unit.parent;
-        while (parentId) {
-          const parent = unitMap[parentId];
-          if (parent && visLevels.includes(parent.levelOrder)) { hasVisibleParent = true; break; }
-          parentId = parent?.parent;
-        }
-        if (!hasVisibleParent) spanStartIndex = 0;
-
-        let spanEndIndex = currentIndex;
-        for (let i = currentIndex + 1; i < visLevels.length; i++) {
-          const nextLevel = visLevels[i];
-          const hasDesc = allUnits.some(u => {
-            if (u.levelOrder !== nextLevel) return false;
-            if (!visibleSet.has(u.id)) return false;
-            let pid = u.parent;
-            while (pid) { if (pid === unit.id) return true; pid = unitMap[pid]?.parent; }
-            return false;
-          });
-          if (hasDesc) { spanEndIndex = i - 1; break; }
-          spanEndIndex = i;
-        }
-
-        const spanColumns = layout.filter(col =>
-          col.id !== "time" && col.id !== "picks" &&
-          visLevels.indexOf(col.id) >= spanStartIndex &&
-          visLevels.indexOf(col.id) <= spanEndIndex
-        );
-        if (spanColumns.length === 0) return;
-
-        const x = spanColumns[0].start + lateral;
-        const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
-        const y1 = scale(unit.start);
-        const y2 = scale(unit.end);
-        const y  = Math.min(y1, y2);
-        const h  = Math.abs(y2 - y1);
-
-        // Skip if entirely outside viewport
-        if (y > cssH || y + h < 0) return;
-
-        ctx.fillStyle = unit.icsColor || "#cccccc";
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = "rgba(0,0,0,0.4)";
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(x, y, w, h);
-      });
-    });
-
-    // Schedule next frame
-    rafHandleRef.current = requestAnimationFrame(drawFrame);
-  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Start the canvas rAF loop; restart when drawFrame identity changes
-  useEffect(() => {
-    rafHandleRef.current = requestAnimationFrame(drawFrame);
-    return () => {
-      if (rafHandleRef.current) cancelAnimationFrame(rafHandleRef.current);
-    };
-  }, [drawFrame]);
-
   const [hoverUnit, setHoverUnit] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
@@ -924,6 +811,113 @@ function App() {
   };
 
   const layout = computeLayout(columns, effectiveColumnWidths, MARGIN);
+
+  // ── Canvas draw function (Phase 1: rectangles only) ──
+  // Must be declared after effectiveColumnWidths and layout are initialized.
+  const drawFrame = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+
+    // Resize canvas backing store if needed (handles window resize)
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width  = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      ctx.scale(dpr, dpr);
+    }
+
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const eM      = effectiveMarginRef.current;
+    const [vMin, vMax] = visibleDomainRef.current;
+    const lateral = lateralOffsetRef.current;
+
+    const allUnits   = effectiveUnits;
+    const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
+
+    const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
+    const cols = [
+      { id: "time", type: "time" },
+      ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
+      { id: "picks", type: "picks" },
+    ];
+    const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
+
+    const scale = buildScale(scaleType, [vMin, vMax], [eM, cssH - eM], allUnits, equalSizeLevel);
+
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    visLevels.forEach(level => {
+      const levelUnits = allUnits.filter(u =>
+        u.levelOrder === level && u.start !== null && visibleSet.has(u.id)
+      ).map(u => ({ ...u, end: u.end ?? 0 }));
+
+      levelUnits.forEach(unit => {
+        const currentIndex = visLevels.indexOf(level);
+        const unitMap = UNIT_MAP;
+
+        let spanStartIndex = currentIndex;
+        let hasVisibleParent = false;
+        let parentId = unit.parent;
+        while (parentId) {
+          const parent = unitMap[parentId];
+          if (parent && visLevels.includes(parent.levelOrder)) { hasVisibleParent = true; break; }
+          parentId = parent?.parent;
+        }
+        if (!hasVisibleParent) spanStartIndex = 0;
+
+        let spanEndIndex = currentIndex;
+        for (let i = currentIndex + 1; i < visLevels.length; i++) {
+          const nextLevel = visLevels[i];
+          const hasDesc = allUnits.some(u => {
+            if (u.levelOrder !== nextLevel) return false;
+            if (!visibleSet.has(u.id)) return false;
+            let pid = u.parent;
+            while (pid) { if (pid === unit.id) return true; pid = unitMap[pid]?.parent; }
+            return false;
+          });
+          if (hasDesc) { spanEndIndex = i - 1; break; }
+          spanEndIndex = i;
+        }
+
+        const spanColumns = frameLayout.filter(col =>
+          col.id !== "time" && col.id !== "picks" &&
+          visLevels.indexOf(col.id) >= spanStartIndex &&
+          visLevels.indexOf(col.id) <= spanEndIndex
+        );
+        if (spanColumns.length === 0) return;
+
+        const x = spanColumns[0].start + lateral;
+        const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
+        const y1 = scale(unit.start);
+        const y2 = scale(unit.end);
+        const y  = Math.min(y1, y2);
+        const h  = Math.abs(y2 - y1);
+
+        if (y > cssH || y + h < 0) return;
+
+        ctx.fillStyle = unit.icsColor || "#cccccc";
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(x, y, w, h);
+      });
+    });
+
+    rafHandleRef.current = requestAnimationFrame(drawFrame);
+  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Start the canvas rAF loop; restart when drawFrame identity changes
+  useEffect(() => {
+    rafHandleRef.current = requestAnimationFrame(drawFrame);
+    return () => {
+      if (rafHandleRef.current) cancelAnimationFrame(rafHandleRef.current);
+    };
+  }, [drawFrame]);
 
   function autoFitColumnWidth(col) {
     const PAD = 16;
@@ -1003,6 +997,9 @@ function App() {
     while (svgElement.firstChild) {
       svgElement.removeChild(svgElement.firstChild);
     }
+
+    // Canvas handles rendering in dynamic mode — leave SVG empty so it doesn't cover the canvas.
+    if (zoomMode === "dynamic") return;
 
     const height = svgElement.clientHeight;
 
