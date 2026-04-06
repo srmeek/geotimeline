@@ -1,3 +1,7 @@
+// Module-level canvas for text measurement — avoids SVG getBBox / forced reflow
+const _mc = document.createElement("canvas");
+const _mctx = _mc.getContext("2d");
+
 function formatAge(age, sigFigs) {
   if (age === 0) return "0";
   // Add small epsilon before floor to prevent log10 floating-point underflow
@@ -22,7 +26,10 @@ export function renderPicks({
 }) {
   // ===== Boundary Lines + Labels =====
 
-  boundaryAges.forEach(({ age, uncertainty, approximate }) => {
+  // Process youngest → oldest (top → bottom on screen) so 0 Ma is always on top.
+  const sorted = [...boundaryAges].sort((a, b) => a.age - b.age); // youngest first
+
+  sorted.forEach(({ age, uncertainty, approximate }) => {
 
     const pos = scale(age);
 
@@ -39,9 +46,9 @@ export function renderPicks({
       : "";
     label.textContent = approxText + ageText + uncText;
 
-    svg.appendChild(label); // temporarily append to measure
-    const textWidth = label.getBBox().width;
-    svg.removeChild(label);
+    // Measure with canvas to avoid SVG layout reflow on every pick
+    _mctx.font = `${fontSize}px sans-serif`;
+    const textWidth = _mctx.measureText(label.textContent).width;
 
     const rightMargin = 4;
     const tickLabelGap = 12;  // ~double space at 10px font
@@ -50,23 +57,21 @@ export function renderPicks({
     // ---- Tick ----
     const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
 
-    const tickEndX = column.end - labelPadding;
-
     tick.setAttribute("x1", column.start);
-    tick.setAttribute("x2", tickEndX);
+    tick.setAttribute("x2", column.end - labelPadding);
     tick.setAttribute("y1", pos);
     tick.setAttribute("y2", pos);
-
-    label.setAttribute("x", column.end - rightMargin);
-    label.setAttribute("y", pos);
-    label.setAttribute("dominant-baseline", "middle");
-    label.setAttribute("text-anchor", "end");
 
     tick.setAttribute("stroke", "black");
     tick.setAttribute("stroke-width", 1);
     tick.setAttribute("data-base-stroke", "1");
 
     svg.appendChild(tick);
+
+    label.setAttribute("x", column.end - rightMargin);
+    label.setAttribute("y", pos);
+    label.setAttribute("dominant-baseline", "middle");
+    label.setAttribute("text-anchor", "end");
     svg.appendChild(label);
   });
 

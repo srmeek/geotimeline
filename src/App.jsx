@@ -77,6 +77,92 @@ function computeLayout(columns, columnWidths, initialOffset = 0) {
   });
 }
 
+/**
+ * Render (or re-render) time-axis ticks into `layer` (a bare SVG g element).
+ * `tickDomain` is the VISIBLE age range in Ma — determines tick density.
+ * `scale`       is the full positioning scale (maps Ma → SVG y-coord).
+ */
+function renderTimeAxisTicks({ layer, scale, tickDomain, timeColumn, eM, svgH, timeUnit, fontSize, fontFamily }) {
+  while (layer.firstChild) layer.removeChild(layer.firstChild);
+
+  const [visMin, visMax] = tickDomain;
+
+  // Always generate evenly-spaced ticks from a linear domain.
+  // Non-linear scales (log, equalSize) position the ticks differently on screen,
+  // but we still want the labels to fall at round age values, not geologic boundaries.
+  const tickValues = d3.scaleLinear().domain([visMin, visMax]).ticks(40);
+  if (!tickValues.length) return;
+
+  const tickSpan = visMax - visMin;
+  const tickStep = tickValues.length > 1
+    ? Math.abs(tickValues[1] - tickValues[0])
+    : Math.max(0.001, tickSpan / 20);
+
+  // Aim for roughly one label per 2.5 line-heights of space
+  const targetLabels = Math.max(4, Math.floor((svgH - 2 * eM) / (fontSize * 2.5)));
+  const majorEvery   = Math.max(1, Math.round(tickValues.length / targetLabels));
+
+  // Labeled major ticks — every majorEvery-th item from tickValues
+  const majorTicks = tickValues.filter((_, i) => i % majorEvery === 0);
+
+  // Minor ticks — 4 subdivisions (1/5 intervals) between each pair of majors
+  const minorTicks = [];
+  for (let i = 0; i < majorTicks.length - 1; i++) {
+    const a = majorTicks[i], b = majorTicks[i + 1];
+    const step = (b - a) / 5;
+    for (let j = 1; j < 5; j++) {
+      const age = a + j * step;
+      if (age >= visMin && age <= visMax) minorTicks.push(age);
+    }
+  }
+
+  // Draw minor ticks first (shorter, no label)
+  minorTicks.forEach(age => {
+    const pos = scale(age);
+    if (pos < eM - 2 || pos > svgH - eM + 2) return;
+    const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    tick.setAttribute("x1", timeColumn.end - 5);
+    tick.setAttribute("x2", timeColumn.end);
+    tick.setAttribute("y1", pos);
+    tick.setAttribute("y2", pos);
+    tick.setAttribute("stroke", "black");
+    tick.setAttribute("stroke-width", "0.7");
+    tick.setAttribute("data-base-stroke", "0.7");
+    layer.appendChild(tick);
+  });
+
+  // Draw major ticks with labels
+  let lastLabelY = -Infinity;
+  majorTicks.forEach(age => {
+    const pos = scale(age);
+    if (pos < eM - 2 || pos > svgH - eM + 2) return;
+
+    const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    tick.setAttribute("x1", timeColumn.end - 12);
+    tick.setAttribute("x2", timeColumn.end);
+    tick.setAttribute("y1", pos);
+    tick.setAttribute("y2", pos);
+    tick.setAttribute("stroke", "black");
+    tick.setAttribute("stroke-width", "1");
+    tick.setAttribute("data-base-stroke", "1");
+    layer.appendChild(tick);
+
+    if (pos - lastLabelY >= fontSize * 1.2) {
+      lastLabelY = pos;
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("dominant-baseline", "middle");
+      label.setAttribute("x", timeColumn.end - 16);
+      label.setAttribute("y", pos);
+      label.setAttribute("text-anchor", "end");
+      label.setAttribute("font-size", fontSize);
+      label.setAttribute("data-base-font-size", String(fontSize));
+      label.setAttribute("font-family", fontFamily);
+      label.textContent = formatTickLabel(age, tickStep, timeUnit);
+      layer.appendChild(label);
+    }
+  });
+}
+
 function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
   if (scaleType === "linear") {
     return d3.scaleLinear().domain(domain).range(range);
@@ -92,8 +178,15 @@ function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
       return Math.exp(logVal) - 1;
     };
     fn.ticks = () => {
-      const candidates = [0, 0.001, 0.01, 0.1, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 4000, 4567];
-      return candidates.filter(t => t >= domain[0] && t <= domain[1]);
+      const result = [];
+      if (domain[0] <= 0) result.push(0);
+      for (let mag = -4; mag <= 4; mag++) {
+        for (const mult of [1, 2, 5]) {
+          const v = mult * Math.pow(10, mag);
+          if (v > 0 && v >= domain[0] && v <= domain[1]) result.push(v);
+        }
+      }
+      return result.sort((a, b) => a - b);
     };
     return fn;
   }
@@ -193,7 +286,21 @@ function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
       const era = eras[eraIndex];
       return era.end + eraFraction * (era.start - era.end);
     };
-    fn.ticks = () => eras.map(e => e.start).concat([0]);
+    fn.ticks = (count = 40) => {
+      const result = new Set();
+      const perEra = Math.max(3, Math.floor(count / eras.length));
+      eras.forEach(era => {
+        const lo = Math.max(domain[0], era.end);
+        const hi = Math.min(domain[1], era.start);
+        if (lo >= hi) return;
+        if (era.start >= domain[0] && era.start <= domain[1]) result.add(era.start);
+        if (era.end   >= domain[0] && era.end   <= domain[1]) result.add(era.end);
+        d3.scaleLinear().domain([lo, hi]).ticks(perEra)
+          .forEach(t => { if (t >= domain[0] && t <= domain[1]) result.add(t); });
+      });
+      if (domain[0] <= 0) result.add(0);
+      return [...result].sort((a, b) => a - b);
+    };
     return fn;
   }
 
@@ -207,13 +314,17 @@ function App() {
   const importEditsRef = useRef(null);
   const effectiveMarginRef = useRef(14);
   const hashDebounceRef = useRef(null);
+  const timeAxisContextRef = useRef(null);
   const [scrollableSize, setScrollableSize] = useState(800);
   const [headerHeight, setHeaderHeight] = useState(() => _initPrefs.headerHeight ?? 48);
   const [headerFontSize, setHeaderFontSize] = useState(() => _initPrefs.headerFontSize ?? 13);
   // Keep effective top margin in a ref so scroll sync closures always read the latest value
   effectiveMarginRef.current = headerHeight + 8;
 
-  const [activeTab, setActiveTab] = useState("View");
+  const [leftPanelOpen, setLeftPanelOpen] = useState(() => _initPrefs.leftPanelOpen ?? true);
+  const [settingsOpen, setSettingsOpen] = useState(() => _initPrefs.settingsOpen ?? false);
+  const [settingsTab, setSettingsTab] = useState("display");
+  const [unitSearch, setUnitSearch] = useState("");
 
   const _defaultColumnConfig = [
     { level: 0, label: "Super-Eon", labelStrat: "Super-Eonothem", visible: true, orientation: null, fontSize: null },
@@ -535,7 +646,7 @@ function App() {
   }, [zoomMode, currentTransform, visibleDomain, dynamicMinAge, dynamicMaxAge]);
 
   const [picksMode, setPicksMode] = useState(() => _initPrefs.picksMode ?? "auto");
-// "auto" | "manual"
+// "auto" | "adaptive" | "manual"
 
   const [manualPicksLevel, setManualPicksLevel] = useState(() => _initPrefs.manualPicksLevel ?? null);
   const [showUncertainty, setShowUncertainty] = useState(() => _initPrefs.showUncertainty ?? false);
@@ -562,11 +673,40 @@ function App() {
     if (!svgEl) return;
     const zoomLayerG = d3.select(svgEl).select("g");
 
+    // ── Rebuild time axis ticks for the current visible domain ──
+    // This is the fix for transform mode where the SVG isn't rebuilt on zoom:
+    // derive the visible Ma range from the D3 transform and regenerate ticks.
+    const ctx = timeAxisContextRef.current;
+    if (ctx && ctx.layer) {
+      const svgH  = svgEl.clientHeight;
+      const eM    = effectiveMarginRef.current;
+      const ty    = transformRef.current.y || 0;
+      // SVG y-coord visible at the very top / bottom of the viewport
+      const rawMin = ctx.scale.invert((0       - ty) / k);
+      const rawMax = ctx.scale.invert((svgH    - ty) / k);
+      const visMin = Math.max(ctx.scaleDomain[0], isFinite(rawMin) ? rawMin : ctx.scaleDomain[0]);
+      const visMax = Math.min(ctx.scaleDomain[1], isFinite(rawMax) ? rawMax : ctx.scaleDomain[1]);
+      if (visMax > visMin) {
+        renderTimeAxisTicks({
+          layer:      ctx.layer,
+          scale:      ctx.scale,
+          tickDomain: [visMin, visMax],
+          timeColumn: ctx.timeColumn,
+          eM,
+          svgH,
+          timeUnit:   ctx.timeUnit,
+          fontSize:   ctx.fontSize,
+          fontFamily: ctx.fontFamily,
+        });
+      }
+    }
+
     zoomLayerG.selectAll("text").each(function () {
       const el = this;
       if (el.hasAttribute("data-block-w")) {
         // Block label — recompute fit+wrap for the current zoom level
-        const blockW  = parseFloat(el.getAttribute("data-block-w"));
+        const orientW = parseFloat(el.getAttribute("data-block-w"));   // orientation bounding box width
+        const drawnW  = parseFloat(el.getAttribute("data-block-dw") || el.getAttribute("data-block-w"));
         const blockH  = parseFloat(el.getAttribute("data-block-h"));
         const userFS  = parseFloat(el.getAttribute("data-user-font-size") || "10");
         const ff      = el.getAttribute("data-font-family") || "Arial, sans-serif";
@@ -575,13 +715,15 @@ function App() {
         const words   = rawText.trim().split(/\s+/).filter(Boolean);
         if (!words.length) return;
 
-        const screenW = blockW * k;
-        const screenH = blockH * k;
-        // Resolve "auto" → align with the longer axis at current zoom
+        const screenOrientW = orientW * k;
+        const screenDrawnW  = drawnW  * k;
+        const screenH       = blockH  * k;
+        // Resolve "auto" using orientW (wider bounding box) so Phanerozoic considers the Super-Eon column
         const resolvedOrient = orient === "auto"
-          ? (screenW >= screenH ? "horizontal" : "vertical")
+          ? (screenOrientW >= screenH ? "horizontal" : "vertical")
           : orient;
-        const [fitW, fitH] = resolvedOrient === "vertical" ? [screenH, screenW] : [screenW, screenH];
+        // Fit text within the actually painted area (screenDrawnW), not the wider orient box
+        const [fitW, fitH] = resolvedOrient === "vertical" ? [screenH, screenDrawnW] : [screenDrawnW, screenH];
         const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
 
         const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, ff, userFS, 5);
@@ -773,6 +915,7 @@ const scaleUnits = scaleType === "equalSize"
   : allUnits;
 
 const eM = effectiveMarginRef.current;
+
 const scale = buildScale(
   scaleType,
   scaleDomain,
@@ -785,8 +928,48 @@ const scale = buildScale(
 
 let boundaryAges = [];
 
+// Adaptive mode: find finest level where adjacent boundaries are >= minPxGap apart
+let adaptivePicksLevel = null;
+if (picksMode === "adaptive" && visibleLevels.length) {
+  // In transform mode the SVG isn't rebuilt on zoom, so derive the currently
+  // visible age range from the transform so we only consider on-screen units.
+  let adaptVisMin = visibleDomain[0];
+  let adaptVisMax = visibleDomain[1];
+  if (zoomMode === "transform") {
+    const k = transformRef.current.k || 1;
+    const ty = transformRef.current.y || 0;
+    const rawMin = scale.invert((eM - ty) / k);
+    const rawMax = scale.invert((height - eM - ty) / k);
+    if (isFinite(rawMin) && isFinite(rawMax) && rawMax > rawMin) {
+      adaptVisMin = Math.max(scaleDomain[0], rawMin);
+      adaptVisMax = Math.min(scaleDomain[1], rawMax);
+    }
+  }
+
+  // minPxGap in scale-coordinate pixels (divide by k to convert screen→scale coords)
+  const currentK = zoomMode === "transform" ? (transformRef.current.k || 1) : 1;
+  const minPxGap = fontSize * 1.6 / currentK;
+  const levelsFineFirst = [...visibleLevels].sort((a, b) => b - a);
+  for (const level of levelsFineFirst) {
+    const positions = allUnits
+      .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+      .filter(u => u.start >= adaptVisMin && u.start <= adaptVisMax)
+      .map(u => scale(u.start))
+      .filter(p => isFinite(p))
+      .sort((a, b) => a - b);
+    if (positions.length === 0) continue;
+    if (positions.length === 1) { adaptivePicksLevel = level; break; }
+    let minGap = Infinity;
+    for (let i = 1; i < positions.length; i++) minGap = Math.min(minGap, positions[i] - positions[i - 1]);
+    if (minGap >= minPxGap) { adaptivePicksLevel = level; break; }
+  }
+  // Fallback to coarsest level if everything is too crowded
+  if (adaptivePicksLevel === null) adaptivePicksLevel = [...visibleLevels].sort((a, b) => a - b)[0];
+}
+
 if ((picksMode === "auto" && visibleLevels.length) ||
-    (picksMode === "manual" && manualPicksLevel !== null)) {
+    (picksMode === "manual" && manualPicksLevel !== null) ||
+    (picksMode === "adaptive" && visibleLevels.length)) {
 
   // Determine which levels to consider
 
@@ -794,6 +977,8 @@ if ((picksMode === "auto" && visibleLevels.length) ||
 
   if (picksMode === "auto") {
     candidateLevels = [...visibleLevels];
+  } else if (picksMode === "adaptive") {
+    candidateLevels = adaptivePicksLevel !== null ? [adaptivePicksLevel] : [visibleLevels[0]];
   } else {
     // Manual: start at selected level and include all higher levels for fallback
     candidateLevels = visibleLevels.filter(
@@ -864,65 +1049,34 @@ timeBackground.setAttribute("stroke", "none");
 backgroundLayer.node().appendChild(timeBackground);
 
 
-// Tick labels
 // ===== Time Axis Ticks =====
+// A dedicated group lets applyCounterScale clear+rebuild ticks for transform mode.
+const timeAxisGroup = backgroundLayer.append("g").node();
 
-const tickValues = scale.ticks(40);
-const visSpan = scaleDomain[1] - scaleDomain[0];
-const tickStep = scaleType === "linear"
-  ? (tickValues.length > 1 ? tickValues[1] - tickValues[0] : 1)
-  : Math.max(1, visSpan / 20); // For non-linear: base decimals on visible span
-const majorEvery = 5;
-
-tickValues.forEach((age, index) => {
-
-  const pos = scale(age);
-
-  const isMajor = index % majorEvery === 0;
-
-  const tick = document.createElementNS(
-    "http://www.w3.org/2000/svg",
-    "line"
-  );
-
-  const minorLength = 6;
-  const majorLength = 12;
-
-  const tickLength = isMajor ? majorLength : minorLength;
-
-  tick.setAttribute("x1", timeColumn.end - tickLength);
-  tick.setAttribute("x2", timeColumn.end);
-  tick.setAttribute("y1", pos);
-  tick.setAttribute("y2", pos);
-
-  tick.setAttribute("stroke", "black");
-  tick.setAttribute("stroke-width", 1);
-  tick.setAttribute("data-base-stroke", "1");
-
-  backgroundLayer.node().appendChild(tick);
-
-  // Label only major ticks
-  if (isMajor) {
-
-    const label = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "text"
-    );
-
-    label.setAttribute("dominant-baseline", "middle");
-    label.setAttribute("x", timeColumn.end - majorLength - 4);
-    label.setAttribute("y", pos);
-    label.setAttribute("text-anchor", "end");
-
-    label.setAttribute("font-size", fontSize);
-    label.setAttribute("data-base-font-size", fontSize);
-    label.setAttribute("font-family", fontFamily);
-    label.textContent = formatTickLabel(age, tickStep, timeUnit);
-
-    backgroundLayer.node().appendChild(label);
-  }
-
+renderTimeAxisTicks({
+  layer: timeAxisGroup,
+  scale,
+  tickDomain: visibleDomain,   // visible range → correct density in both modes
+  timeColumn,
+  eM,
+  svgH: height,
+  timeUnit,
+  fontSize,
+  fontFamily,
 });
+
+// Store context so applyCounterScale can rebuild ticks on every zoom event
+// (critical for transform mode where the SVG isn't rebuilt on zoom).
+timeAxisContextRef.current = {
+  layer: timeAxisGroup,
+  scale,
+  scaleDomain,
+  timeColumn,
+  eM,
+  timeUnit,
+  fontSize,
+  fontFamily,
+};
 
 // ===== BLOCKS =====
 
@@ -1002,6 +1156,15 @@ visibleLevels.forEach(level => {
     const labelColStart = colBandStart;
     const labelColWidth = colBandWidth;
 
+    // For auto-orientation: units without a visible parent (e.g. Phanerozoic) should
+    // include ALL visible hierarchy columns to their left in the bounding-box width so
+    // the Super-Eon column contributes to the horizontal extent.  Derive this directly
+    // from the layout rather than relying on spanStartIndex.
+    const orientBandStart = !hasVisibleParent
+      ? (layout.find(col => col.id !== "time" && col.id !== "picks")?.start ?? colBandStart)
+      : colBandStart;
+    const orientWidth = spanColumns[spanColumns.length - 1].end - orientBandStart;
+
     // ===== Vertical geometry from scale =====
 
     const pos1 = scale(unit.start);
@@ -1031,6 +1194,7 @@ visibleLevels.forEach(level => {
       x: colBandStart,
       y: blockY,
       width: blockWidth,
+      orientWidth,
       height: blockHeight,
       fill: unit.icsColor || "#ccc",
       label: (() => {
@@ -1084,21 +1248,41 @@ if (picksColumn && boundaryAges.length) {
 }
 
 
-// ===== GSSP MARKERS =====
-if (showGSSP) {
+// ===== GSSP / GSSA MARKERS =====
+if (showGSSP && picksColumn) {
+  const markerX = picksColumn.end + 4;
+
+  // GSSP — gold triangle pointing right
   allUnits
     .filter(u => u.ratifiedGSSP === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
     .forEach(unit => {
       const yPos = scale(unit.start);
-      if (yPos < 0 || yPos > height) return;
+      if (yPos < eM - 2 || yPos > height - eM + 2) return;
       const marker = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      marker.setAttribute("x", timeColumn.end + 2);
+      marker.setAttribute("x", markerX);
       marker.setAttribute("y", yPos);
       marker.setAttribute("font-size", "8");
       marker.setAttribute("data-base-font-size", "8");
       marker.setAttribute("fill", "#DAA520");
       marker.setAttribute("dominant-baseline", "middle");
       marker.textContent = "▶";
+      gsspLayer.node().appendChild(marker);
+    });
+
+  // GSSA — blue clock symbol
+  allUnits
+    .filter(u => u.ratifiedGSSA === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+    .forEach(unit => {
+      const yPos = scale(unit.start);
+      if (yPos < eM - 2 || yPos > height - eM + 2) return;
+      const marker = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      marker.setAttribute("x", markerX + 12);
+      marker.setAttribute("y", yPos);
+      marker.setAttribute("font-size", "8");
+      marker.setAttribute("data-base-font-size", "8");
+      marker.setAttribute("fill", "#4169E1");
+      marker.setAttribute("dominant-baseline", "middle");
+      marker.textContent = "⏱";
       gsspLayer.node().appendChild(marker);
     });
 }
@@ -1124,13 +1308,23 @@ if (showGSSP) {
       picksMode, manualPicksLevel, showUncertainty, picksSigFigs,
       hiddenUnits: [...hiddenUnits],
       headerHeight, headerFontSize,
+      leftPanelOpen, settingsOpen,
     };
     localStorage.setItem("gt_prefs", JSON.stringify(prefs));
-  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, headerHeight, headerFontSize]);
+  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, headerHeight, headerFontSize, leftPanelOpen, settingsOpen]);
 
   useEffect(() => {
     localStorage.setItem("gt_unitEdits", JSON.stringify(unitEdits));
   }, [unitEdits]);
+
+  // Prevent browser page-zoom (Ctrl+scroll) everywhere on the page.
+  // The SVG listener only fires when the cursor is directly over the SVG;
+  // this covers the toolbar, panels, scrollbar, and any other area.
+  useEffect(() => {
+    const preventBrowserZoom = (e) => { if (e.ctrlKey) e.preventDefault(); };
+    window.addEventListener("wheel", preventBrowserZoom, { passive: false });
+    return () => window.removeEventListener("wheel", preventBrowserZoom);
+  }, []);
 
   useEffect(() => {
     const svgElement = svgRef.current;
@@ -1149,8 +1343,15 @@ if (showGSSP) {
         .translateExtent([[-Infinity, -Infinity], [Infinity, Infinity]])
         .filter(event => {
           if (event.type === "dblclick") return false;
-          return event.type === "wheel" || event.button === 0;
+          if (event.type === "wheel") return event.ctrlKey;
+          return event.button === 0;
         })
+        // D3's default wheelDelta multiplies by 10× when ctrlKey is held
+        // (intended for trackpad pinch which sends many tiny events).
+        // Override to remove that multiplier so a mouse Ctrl+scroll is sane.
+        .wheelDelta(event =>
+          -event.deltaY * (event.deltaMode === 1 ? 0.025 : event.deltaMode ? 0.5 : 0.001)
+        )
         .on("zoom", (event) => {
           transformRef.current = event.transform;
           svg.select("g").attr("transform", event.transform);
@@ -1205,35 +1406,90 @@ if (showGSSP) {
       };
 
     } else {
-      // ===== DYNAMIC MODE: D3 for wheel zoom, raw mouse events for pan =====
-      let isResetting = false;
+      // ===== DYNAMIC MODE: direct wheel handler, raw mouse events for pan =====
+      // D3 zoom is NOT used here — it adds a non-passive wheel listener that
+      // interferes with the scroll/zoom separation. We own the wheel event entirely.
+      let rafId = null;
+      zoomBehaviorRef.current = null;
 
-      const zoom = d3.zoom()
-        .scaleExtent([0.1, 1e8])
-        .translateExtent([[-Infinity, -Infinity], [Infinity, Infinity]])
-        .filter(event => event.type === "wheel")
-        .on("zoom", (event) => {
-          if (isResetting) return;
-          const { k, y: ty } = event.transform;
-          const [refMin, refMax] = visibleDomainRef.current;
-          const refScale = d3.scaleLinear()
-            .domain([refMin, refMax])
-            .range([MARGIN, svgHeight - MARGIN]);
-          const newMin = refScale.invert((MARGIN - ty) / k);
-          const newMax = refScale.invert((svgHeight - MARGIN - ty) / k);
-          const clampedMin = Math.max(dynamicMinAgeRef.current, newMin);
-          const clampedMax = Math.min(dynamicMaxAgeRef.current, newMax);
-          if (clampedMin < clampedMax) {
-            visibleDomainRef.current = [clampedMin, clampedMax];
-            setVisibleDomain([clampedMin, clampedMax]);
-          }
-          isResetting = true;
-          svg.call(zoom.transform, d3.zoomIdentity);
-          isResetting = false;
+      // Helper: clamp a new [min, max] to the allowed domain while preserving span
+      function clampDomain(newMin, newMax, span) {
+        if (newMin < dynamicMinAgeRef.current) {
+          newMin = dynamicMinAgeRef.current;
+          newMax = Math.min(dynamicMaxAgeRef.current, newMin + span);
+        }
+        if (newMax > dynamicMaxAgeRef.current) {
+          newMax = dynamicMaxAgeRef.current;
+          newMin = Math.max(dynamicMinAgeRef.current, newMax - span);
+        }
+        return [newMin, newMax];
+      }
+
+      function commitDomain(newMin, newMax) {
+        if (newMin >= newMax) return;
+        visibleDomainRef.current = [newMin, newMax];
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          setVisibleDomain([...visibleDomainRef.current]);
+          rafId = null;
         });
+      }
 
-      svg.call(zoom);
-      zoomBehaviorRef.current = zoom;
+      const onWheel = (e) => {
+        e.preventDefault(); // always prevent: browser zoom (ctrl) or native scroll (plain)
+
+        const eM     = effectiveMarginRef.current;
+        const h      = svgElement.clientHeight;
+        const [refMin, refMax] = visibleDomainRef.current;
+        const span   = refMax - refMin;
+        // Pan delta: amplified so a mouse notch moves a meaningful Ma distance.
+        const panDelta  = e.deltaY * (e.deltaMode === 1 ? 100 : e.deltaMode === 2 ? 300 : 4);
+        // Zoom delta: NOT amplified — exponential zoom math is already sensitive.
+        // Using the pan multiplier here made zoom 4× too fast.
+        const zoomDelta = e.deltaY * (e.deltaMode === 1 ?  30 : e.deltaMode === 2 ? 300 : 1);
+
+        if (e.ctrlKey) {
+          // ── Zoom toward cursor ──
+          const rect    = svgElement.getBoundingClientRect();
+          const cursorY = e.clientY - rect.top;
+          // pct: cursor's fractional position within the drawable area [eM, h-eM].
+          const pct     = Math.max(0, Math.min(1, (cursorY - eM) / (h - 2 * eM)));
+          // focalAge: age currently under the cursor.
+          // Using linear interpolation in age-space (refMin + pct*span) is exact for
+          // linear scale and gives correct temporal anchoring for non-linear scales.
+          // scale.invert is NOT used here because for equalSize/eraEqual it maps
+          // cursorY into the distribution of ALL units, not just visible ones,
+          // causing the focal age to be biased toward the youngest units (top).
+          const focalAge = refMin + pct * span;
+          // zoomDelta>0 = scroll down = zoom out (larger span); <0 = zoom in.
+          // speedScale compresses the exponent at high zoom so each notch produces a
+          // proportionally smaller change — the user perceives consistent visual speed.
+          const fullSpan   = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
+          const speedScale = Math.pow(span / fullSpan, 0.6);
+          const kFactor    = Math.pow(2, zoomDelta * 0.003 * speedScale);
+          const newSpan  = span * kFactor;
+          const [newMin, newMax] = clampDomain(
+            focalAge - pct * newSpan,
+            focalAge + (1 - pct) * newSpan,
+            newSpan
+          );
+          // Bypass RAF batching for zoom — apply synchronously so focal point stays
+          // under the cursor. RAF accumulation across multiple wheel events causes
+          // the perceived "jump" because intermediate states are skipped.
+          if (newMin < newMax) {
+            visibleDomainRef.current = [newMin, newMax];
+            setVisibleDomain([newMin, newMax]);
+          }
+        } else {
+          // ── Pan along time axis ──
+          const agePerPx = span / (h - 2 * eM);
+          const shift    = panDelta * agePerPx;
+          const [newMin, newMax] = clampDomain(refMin + shift, refMax + shift, span);
+          commitDomain(newMin, newMax);
+        }
+      };
+
+      svgElement.addEventListener("wheel", onWheel, { passive: false });
 
       // Pan: track raw mouse displacement from mousedown, apply to frozen start domain
       let pan = null; // { startX, startY, domain, lateral }
@@ -1257,22 +1513,17 @@ if (showGSSP) {
 
         // Axial pan (along the time axis)
         const [refMin, refMax] = pan.domain;
+        const eM = effectiveMarginRef.current;
+        const liveH = svgElement.clientHeight;  // read live — svgHeight in closure may be stale
+        // Linear scale correctly computes "what age was at pixel eM-dy in the frozen
+        // domain" — i.e. the age that should now appear at the top after a dy-pixel drag.
         const refScale = d3.scaleLinear()
           .domain([refMin, refMax])
-          .range([MARGIN, svgHeight - MARGIN]);
-        const newMin = refScale.invert(MARGIN - dy);
-        // Clamp while preserving span so pan never changes zoom level
+          .range([eM, liveH - eM]);
+        const newMin = refScale.invert(eM - dy);
         const span = refMax - refMin;
-        let clampedMin = Math.max(dynamicMinAgeRef.current, newMin);
-        let clampedMax = clampedMin + span;
-        if (clampedMax > dynamicMaxAgeRef.current) {
-          clampedMax = dynamicMaxAgeRef.current;
-          clampedMin = Math.max(dynamicMinAgeRef.current, dynamicMaxAgeRef.current - span);
-        }
-        if (clampedMin < clampedMax) {
-          visibleDomainRef.current = [clampedMin, clampedMax];
-          setVisibleDomain([clampedMin, clampedMax]);
-        }
+        const [clampedMin, clampedMax] = clampDomain(newMin, newMin + span, span);
+        if (clampedMin < clampedMax) commitDomain(clampedMin, clampedMax);
 
         // Lateral pan (perpendicular to time axis) — direct DOM for smooth feedback
         const newLateral = pan.lateral + dx;
@@ -1292,7 +1543,12 @@ if (showGSSP) {
           const isZoomOut = event.key === "-";
           if (!isZoomIn && !isZoomOut) return;
           event.preventDefault();
-          svg.call(zoom.scaleBy, isZoomIn ? 1.5 : 1 / 1.5, [svgWidth / 2, svgHeight / 2]);
+          const [vMin, vMax] = visibleDomainRef.current;
+          const span   = vMax - vMin;
+          const center = (vMin + vMax) / 2;
+          const newSpan = span * (isZoomIn ? 1 / 1.5 : 1.5);
+          const [newMin, newMax] = clampDomain(center - newSpan / 2, center + newSpan / 2, newSpan);
+          if (newMin < newMax) { visibleDomainRef.current = [newMin, newMax]; setVisibleDomain([newMin, newMax]); }
           return;
         }
         const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
@@ -1322,15 +1578,66 @@ if (showGSSP) {
       window.addEventListener("keydown", onKeyDown);
 
       return () => {
-        svg.on(".zoom", null);
+        if (rafId) cancelAnimationFrame(rafId);
         svgElement.removeEventListener("contextmenu", onContextMenu);
+        svgElement.removeEventListener("wheel", onWheel);
         svgElement.removeEventListener("mousedown", onMouseDown);
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
         window.removeEventListener("keydown", onKeyDown);
       };
     }
-  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode]);
+  }, [columnConfig, columnWidths, zoomMode]);
+
+  // Recursive tree renderer — shows all non-stage units with toggle checkboxes
+  function renderUnitTree(parentId, depth) {
+    const children = effectiveUnits
+      .filter(u => u.parent === parentId && u.levelOrder < 6 && u.start !== null)
+      .sort((a, b) => b.start - a.start);
+    if (children.length === 0) return null;
+    return children.map(unit => {
+      const hasChildren = effectiveUnits.some(u => u.parent === unit.id && u.levelOrder < 6);
+      const isHidden = hiddenUnits.has(unit.id);
+      const ancestorHidden = !isHidden && !isUnitVisible(unit.id, hiddenUnits);
+      const isExpanded = expandedNodes.has(unit.id);
+      return (
+        <div key={unit.id}>
+          <div style={{ display: "flex", alignItems: "center", paddingLeft: depth * 14, paddingTop: 2, paddingBottom: 2, opacity: ancestorHidden ? 0.4 : 1 }}>
+            <span
+              onClick={() => {
+                if (!hasChildren) return;
+                setExpandedNodes(prev => {
+                  const next = new Set(prev);
+                  if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id);
+                  return next;
+                });
+              }}
+              style={{ width: 14, cursor: hasChildren ? "pointer" : "default", userSelect: "none", display: "inline-block", flexShrink: 0 }}
+            >
+              {hasChildren ? (isExpanded ? "▾" : "▸") : ""}
+            </span>
+            <input
+              type="checkbox"
+              checked={!isHidden}
+              disabled={ancestorHidden}
+              onChange={() => {
+                setHiddenUnits(prev => {
+                  const next = new Set(prev);
+                  if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id);
+                  return next;
+                });
+              }}
+              style={{ margin: "0 5px 0 0", flexShrink: 0 }}
+            />
+            <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "#999" : "#000", whiteSpace: "nowrap" }}>
+              {unit.displayName}
+            </span>
+          </div>
+          {isExpanded && renderUnitTree(unit.id, depth + 1)}
+        </div>
+      );
+    });
+  }
 
   return (
     <div style={{
@@ -1342,441 +1649,202 @@ if (showGSSP) {
       background: "white"
     }}>
 
-      {/* Ribbon Tabs */}
+      {/* Zone 1: Toolbar */}
       <div style={{
+        height: 40,
         display: "flex",
+        alignItems: "center",
+        padding: "0 8px",
         borderBottom: "1px solid #ccc",
-        background: "#f0f0f0"
+        background: "#f8f8f8",
+        gap: 8,
+        flexShrink: 0,
       }}>
-        {["View", "Columns", "Picks", "Display", "Filter", "Data", "Export"].map(tab => (
-          <div
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: "10px 20px",
-              cursor: "pointer",
-              background: activeTab === tab ? "#ffffff" : "#f0f0f0",
-              borderBottom: activeTab === tab ? "3px solid #333" : "none"
-            }}
+        <button
+          onClick={() => setLeftPanelOpen(v => !v)}
+          title="Toggle panel"
+          style={{ fontSize: 16, padding: "2px 6px", border: "1px solid #ccc", background: leftPanelOpen ? "#ddd" : "#f5f5f5", cursor: "pointer", borderRadius: 3 }}
+        >☰</button>
+
+        <button
+          onClick={handleResetZoom}
+          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: "#f5f5f5", cursor: "pointer", borderRadius: 3 }}
+        >Reset</button>
+
+        <div style={{ display: "flex", border: "1px solid #999", borderRadius: 4, overflow: "hidden" }}>
+          {[["dynamic","Dynamic"],["transform","Smooth"]].map(([val,lbl], i) => (
+            <button key={val} onClick={() => handleSwitchZoomMode(val)}
+              style={{ padding: "2px 8px", fontSize: 11, border: "none", borderRight: i === 0 ? "1px solid #999" : "none", background: zoomMode === val ? "#555" : "#f5f5f5", color: zoomMode === val ? "white" : "#333", cursor: "pointer" }}
+            >{lbl}</button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", border: "1px solid #999", borderRadius: 4, overflow: "hidden" }}>
+          {["Ga","Ma","ka"].map((u, i) => (
+            <button key={u} onClick={() => setTimeUnit(u)}
+              style={{ padding: "2px 8px", fontSize: 11, border: "none", borderRight: i < 2 ? "1px solid #999" : "none", background: timeUnit === u ? "#555" : "#f5f5f5", color: timeUnit === u ? "white" : "#333", cursor: "pointer" }}
+            >{u}</button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", border: "1px solid #999", borderRadius: 4, overflow: "hidden" }}>
+          {[["linear","Linear"],["log","Log"],["equalSize","Equal"],["eraEqual","Era"]].map(([val,lbl], i, arr) => (
+            <button key={val} onClick={() => setScaleType(val)}
+              style={{ padding: "2px 8px", fontSize: 11, border: "none", borderRight: i < arr.length - 1 ? "1px solid #999" : "none", background: scaleType === val ? "#555" : "#f5f5f5", color: scaleType === val ? "white" : "#333", cursor: "pointer" }}
+            >{lbl}</button>
+          ))}
+        </div>
+        {scaleType === "equalSize" && (
+          <select
+            value={equalSizeLevel}
+            onChange={e => setEqualSizeLevel(Number(e.target.value))}
+            style={{ fontSize: 11, padding: "1px 4px" }}
           >
-            {tab}
-          </div>
-        ))}
-      </div>
-
-      {/* Ribbon Content */}
-      <div style={{
-        padding: "10px",
-        borderBottom: "1px solid #ccc",
-        background: "#ffffff"
-      }}>
-        {activeTab === "View" && (
-          <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
-            <strong>Zoom Mode:</strong>
-            <label>
-              <input
-                type="radio"
-                name="zoomMode"
-                value="transform"
-                checked={zoomMode === "transform"}
-                onChange={() => handleSwitchZoomMode("transform")}
-              />
-              Transform
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="zoomMode"
-                value="dynamic"
-                checked={zoomMode === "dynamic"}
-                onChange={() => handleSwitchZoomMode("dynamic")}
-              />
-              Dynamic
-            </label>
-
-            <button onClick={handleResetZoom}>Reset Zoom</button>
-
-            <strong>Time Units:</strong>
-            {["Ga", "Ma", "ka"].map(unit => (
-              <label key={unit}>
-                <input
-                  type="radio"
-                  name="timeUnit"
-                  value={unit}
-                  checked={timeUnit === unit}
-                  onChange={() => setTimeUnit(unit)}
-                />
-                {unit}
-              </label>
+            {columnConfig.map(col => (
+              <option key={col.level} value={col.level}>{col.label}</option>
             ))}
-          </div>
+          </select>
         )}
 
-        {activeTab === "Columns" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
+        <div style={{ flex: 1 }} />
+
+        <button
+          onClick={() => setShowGSSP(v => !v)}
+          title="GSSP markers"
+          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: showGSSP ? "#555" : "#f5f5f5", color: showGSSP ? "white" : "#333", cursor: "pointer", borderRadius: 3 }}
+        >GSSP</button>
+
+        <button
+          onClick={() => setSettingsOpen(v => !v)}
+          title="Settings"
+          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: settingsOpen ? "#555" : "#f5f5f5", color: settingsOpen ? "white" : "#333", cursor: "pointer", borderRadius: 3 }}
+        >Settings</button>
+
+        <button
+          onClick={() => setShowDataEditor(v => !v)}
+          title="Data editor"
+          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: showDataEditor ? "#555" : "#f5f5f5", color: showDataEditor ? "white" : "#333", cursor: "pointer", borderRadius: 3 }}
+        >⊞ Data</button>
+      </div>
+
+      {/* Zone 1: Status strip */}
+      <div style={{
+        height: 22,
+        display: "flex",
+        alignItems: "center",
+        padding: "0 10px",
+        borderBottom: "1px solid #e0e0e0",
+        background: "#fafafa",
+        fontSize: 11,
+        color: "#555",
+        flexShrink: 0,
+        gap: 16,
+      }}>
+        <span>
+          {timeUnit === "Ga"
+            ? `${(visibleDomain[0]/1000).toFixed(3)}–${(visibleDomain[1]/1000).toFixed(3)} Ga`
+            : timeUnit === "ka"
+            ? `${(visibleDomain[0]*1000).toFixed(0)}–${(visibleDomain[1]*1000).toFixed(0)} ka`
+            : `${visibleDomain[0].toFixed(2)}–${visibleDomain[1].toFixed(2)} Ma`}
+        </span>
+        <span>{columnConfig.filter(c => c.visible).length} columns visible</span>
+        {hiddenUnits.size > 0 && <span>{hiddenUnits.size} units hidden</span>}
+      </div>
+
+
+      {/* Main area: left panel + visualization + settings panel */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+
+      {/* Zone 2: Left Panel */}
+      {leftPanelOpen && (
+        <div style={{
+          width: 220,
+          flexShrink: 0,
+          borderRight: "1px solid #ccc",
+          display: "flex",
+          flexDirection: "column",
+          background: "#fafafa",
+          overflow: "hidden",
+        }}>
+          {/* Columns section */}
+          <div style={{ padding: "6px 10px 4px", borderBottom: "1px solid #ddd", fontWeight: "bold", fontSize: 12 }}>Columns</div>
+          <div style={{ padding: "4px 10px 8px", borderBottom: "1px solid #ddd", overflowY: "auto" }}>
             {columnConfig.map((col, index) => (
-              <div key={col.level} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div key={col.level} style={{ display: "flex", alignItems: "center", gap: 4, paddingTop: 3, paddingBottom: 3 }}>
                 <input
                   type="checkbox"
                   checked={col.visible}
-                  onChange={() => {
-                    const updated = columnConfig.map((c, i) =>
-                      i === index ? { ...c, visible: !c.visible } : c
-                    );
-                    setColumnConfig(updated);
-                  }}
+                  onChange={() => setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, visible: !c.visible } : c))}
                 />
-                <span style={{ width: 80, fontSize: 12 }}>{col.label}</span>
+                <span style={{ flex: 1, fontSize: 11 }}>{col.label}</span>
                 <select
                   value={col.orientation ?? "auto"}
                   onChange={e => {
                     const val = e.target.value === "auto" ? null : e.target.value;
-                    setColumnConfig(columnConfig.map((c, i) =>
-                      i === index ? { ...c, orientation: val } : c
-                    ));
+                    setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, orientation: val } : c));
                   }}
-                  style={{ fontSize: 11 }}
+                  style={{ fontSize: 10, maxWidth: 68 }}
                 >
-                  <option value="auto">Auto orient</option>
-                  <option value="horizontal">Horizontal</option>
-                  <option value="vertical">Vertical</option>
+                  <option value="auto">Auto</option>
+                  <option value="horizontal">Horiz</option>
+                  <option value="vertical">Vert</option>
                 </select>
-                <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
-                  Size:
-                  <input
-                    type="number"
-                    min={5}
-                    max={32}
-                    value={col.fontSize ?? ""}
-                    placeholder={String(fontSize)}
-                    onChange={e => {
-                      const val = e.target.value === "" ? null : Number(e.target.value);
-                      setColumnConfig(columnConfig.map((c, i) =>
-                        i === index ? { ...c, fontSize: val } : c
-                      ));
-                    }}
-                    style={{ width: 44, fontSize: 11 }}
-                  />
-                </label>
+                <input
+                  type="number"
+                  min={5} max={32}
+                  value={col.fontSize ?? ""}
+                  placeholder={String(fontSize)}
+                  onChange={e => {
+                    const val = e.target.value === "" ? null : Number(e.target.value);
+                    setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, fontSize: val } : c));
+                  }}
+                  style={{ width: 32, fontSize: 10 }}
+                />
               </div>
             ))}
           </div>
-        )}
 
-        {activeTab === "Picks" && (
-          <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
-
-            <div>
-              <strong>Boundary Mode:</strong>
-            </div>
-
-            <label>
-              <input
-                type="radio"
-                name="picksMode"
-                value="auto"
-                checked={picksMode === "auto"}
-                onChange={() => setPicksMode("auto")}
-              />
-              Auto (Deepest Visible Coverage)
-            </label>
-
-            <label>
-              <input
-                type="radio"
-                name="picksMode"
-                value="manual"
-                checked={picksMode === "manual"}
-                onChange={() => setPicksMode("manual")}
-              />
-              Manual
-            </label>
-
-            {picksMode === "manual" && (
-              <select
-                value={manualPicksLevel ?? ""}
-                onChange={(e) =>
-                  setManualPicksLevel(
-                    e.target.value === "" ? null : Number(e.target.value)
-                  )
-                }
-              >
-                <option value="">Select Level</option>
-                {columnConfig.map(col => (
-                  <option key={col.level} value={col.level}>
-                    {col.label}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            <label>
-              <input
-                type="checkbox"
-                checked={showUncertainty}
-                onChange={e => setShowUncertainty(e.target.checked)}
-              />
-              Show uncertainty
-            </label>
-
-            <label>
-              Significant figures:
-              <select
-                value={picksSigFigs}
-                onChange={e => setPicksSigFigs(Number(e.target.value))}
-                style={{ marginLeft: 6 }}
-              >
-                {[3, 4, 5, 6].map(n => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
-            </label>
-
+          {/* Units section */}
+          <div style={{ padding: "6px 10px 4px", borderBottom: "1px solid #ddd", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+            <span style={{ fontWeight: "bold", fontSize: 12 }}>Units</span>
+            <button onClick={() => setHiddenUnits(new Set())} style={{ fontSize: 10, padding: "1px 6px" }}>Show All</button>
           </div>
-        )}
-
-        {activeTab === "Display" && (
-          <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
-            <strong>Headers:</strong>
-            <label>
-              Size:
-              <input
-                type="range"
-                min="8"
-                max="22"
-                value={headerFontSize}
-                onChange={e => setHeaderFontSize(Number(e.target.value))}
-                style={{ marginLeft: 6 }}
-              />
-              {headerFontSize}px
-            </label>
-            <strong>Text:</strong>
-            <label>
-              Size:
-              <input
-                type="range"
-                min="6"
-                max="16"
-                value={fontSize}
-                onChange={e => setFontSize(Number(e.target.value))}
-                style={{ marginLeft: 6 }}
-              />
-              {fontSize}px
-            </label>
-            <label>
-              Font:
-              <select
-                value={fontFamily}
-                onChange={e => setFontFamily(e.target.value)}
-                style={{ marginLeft: 6 }}
-              >
-                <option value="Arial, sans-serif">Arial</option>
-                <option value="'Times New Roman', serif">Times New Roman</option>
-                <option value="'Courier New', monospace">Courier New</option>
-                <option value="Georgia, serif">Georgia</option>
-                <option value="Verdana, sans-serif">Verdana</option>
-              </select>
-            </label>
-            <strong>Labels:</strong>
-            <label>
-              <input
-                type="radio"
-                name="labelOrientation"
-                value="horizontal"
-                checked={labelOrientation === "horizontal"}
-                onChange={() => setLabelOrientation("horizontal")}
-              />
-              Horizontal
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="labelOrientation"
-                value="vertical"
-                checked={labelOrientation === "vertical"}
-                onChange={() => setLabelOrientation("vertical")}
-              />
-              Vertical
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={contrastText}
-                onChange={e => setContrastText(e.target.checked)}
-              />
-              {" "}Auto text contrast
-            </label>
-            <label><input type="checkbox" checked={fontBold} onChange={e => setFontBold(e.target.checked)} />{" "}Bold</label>
-            <label><input type="checkbox" checked={fontItalic} onChange={e => setFontItalic(e.target.checked)} />{" "}Italic</label>
-            <label><input type="checkbox" checked={fontUnderline} onChange={e => setFontUnderline(e.target.checked)} />{" "}Underline</label>
-            <label><input type="checkbox" checked={showGSSP} onChange={e => setShowGSSP(e.target.checked)} />{" "}GSSP markers</label>
-            <strong>Naming:</strong>
-            {[
-              { value: "timescale",    label: "Timescale" },
-              { value: "stratigraphic",label: "Stratigraphic" },
-              { value: "both",         label: "Both" }
-            ].map(opt => (
-              <label key={opt.value}>
-                <input
-                  type="radio"
-                  name="labelMode"
-                  value={opt.value}
-                  checked={labelMode === opt.value}
-                  onChange={() => setLabelMode(opt.value)}
-                />
-                {opt.label}
-              </label>
-            ))}
-            <strong>Scale:</strong>
-            {[
-              { value: "linear",    label: "Linear" },
-              { value: "log",       label: "Logarithmic" },
-              { value: "equalSize", label: "Equal Size" },
-              { value: "eraEqual",  label: "Era Equal" }
-            ].map(opt => (
-              <label key={opt.value}>
-                <input
-                  type="radio"
-                  name="scaleType"
-                  value={opt.value}
-                  checked={scaleType === opt.value}
-                  onChange={() => setScaleType(opt.value)}
-                />
-                {opt.label}
-              </label>
-            ))}
-            {scaleType === "equalSize" && (
-              <select
-                value={equalSizeLevel}
-                onChange={e => setEqualSizeLevel(Number(e.target.value))}
-              >
-                {columnConfig.map(col => (
-                  <option key={col.level} value={col.level}>{col.label}</option>
-                ))}
-              </select>
-            )}
-            <div style={{ width: "100%", marginTop: 8, borderTop: "1px solid #ddd", paddingTop: 6 }}>
-              <strong style={{ fontSize: 11 }}>Font Size Rules (by age range):</strong>
-              {fontRules.map(rule => (
-                <div key={rule.id} style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4, fontSize: 11 }}>
-                  <input type="number" value={rule.minAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, minAge: Number(e.target.value) } : r))} style={{ width: 60 }} placeholder="Min Ma" />
-                  <span>–</span>
-                  <input type="number" value={rule.maxAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, maxAge: Number(e.target.value) } : r))} style={{ width: 60 }} placeholder="Max Ma" />
-                  <span>Ma,</span>
-                  <input type="number" value={rule.fontSize} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, fontSize: Number(e.target.value) } : r))} style={{ width: 44 }} min={5} max={32} placeholder="px" />
-                  <span>px</span>
-                  <button onClick={() => setFontRules(fontRules.filter(r => r.id !== rule.id))} style={{ fontSize: 10, padding: "1px 5px" }}>✕</button>
-                </div>
-              ))}
-              <button
-                onClick={() => setFontRules([...fontRules, { id: String(Date.now()), minAge: 0, maxAge: 66, fontSize: fontSize }])}
-                style={{ marginTop: 4, fontSize: 11, padding: "2px 8px" }}
-              >+ Add Rule</button>
-            </div>
+          <div style={{ padding: "4px 8px", flexShrink: 0 }}>
+            <input
+              placeholder="Search units…"
+              value={unitSearch}
+              onChange={e => setUnitSearch(e.target.value)}
+              style={{ width: "100%", fontSize: 11, padding: "2px 6px", border: "1px solid #ccc", boxSizing: "border-box" }}
+            />
           </div>
-        )}
-
-        {activeTab === "Filter" && (() => {
-          // Recursive tree renderer — shows all non-stage units with toggle checkboxes
-          function renderUnitTree(parentId, depth) {
-            const children = effectiveUnits
-              .filter(u => u.parent === parentId && u.levelOrder < 6 && u.start !== null)
-              .sort((a, b) => b.start - a.start); // oldest first
-            if (children.length === 0) return null;
-            return children.map(unit => {
-              const hasChildren = effectiveUnits.some(u => u.parent === unit.id && u.levelOrder < 6);
-              const isHidden = hiddenUnits.has(unit.id);
-              const ancestorHidden = !isHidden && !isUnitVisible(unit.id, hiddenUnits);
-              const isExpanded = expandedNodes.has(unit.id);
-              return (
-                <div key={unit.id}>
-                  <div style={{ display: "flex", alignItems: "center", paddingLeft: depth * 14, paddingTop: 2, paddingBottom: 2, opacity: ancestorHidden ? 0.4 : 1 }}>
-                    <span
-                      onClick={() => {
-                        if (!hasChildren) return;
-                        setExpandedNodes(prev => {
-                          const next = new Set(prev);
-                          if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id);
-                          return next;
-                        });
-                      }}
-                      style={{ width: 14, cursor: hasChildren ? "pointer" : "default", userSelect: "none", display: "inline-block", flexShrink: 0 }}
-                    >
-                      {hasChildren ? (isExpanded ? "▾" : "▸") : ""}
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={!isHidden}
-                      disabled={ancestorHidden}
-                      onChange={() => {
-                        setHiddenUnits(prev => {
-                          const next = new Set(prev);
-                          if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id);
-                          return next;
-                        });
-                      }}
-                      style={{ margin: "0 5px 0 0", flexShrink: 0 }}
-                    />
-                    <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "#999" : "#000", whiteSpace: "nowrap" }}>
-                      {unit.displayName}
-                    </span>
-                  </div>
-                  {isExpanded && renderUnitTree(unit.id, depth + 1)}
-                </div>
-              );
-            });
-          }
-          return (
-            <div style={{ padding: "6px 10px", fontSize: 11, overflowY: "auto", maxHeight: 260, minWidth: 220 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <strong style={{ fontSize: 12 }}>Show / Hide Units</strong>
-                <button onClick={() => setHiddenUnits(new Set())} style={{ fontSize: 10, padding: "1px 6px" }}>Show All</button>
-              </div>
-              {renderUnitTree(null, 0)}
-            </div>
-          );
-        })()}
-
-        {activeTab === "Data" && (
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <button
-              onClick={() => setShowDataEditor(v => !v)}
-              style={{ padding: "4px 12px", fontWeight: showDataEditor ? "bold" : "normal", background: showDataEditor ? "#ddd" : "#fff", border: "1px solid #aaa", cursor: "pointer" }}
-            >
-              {showDataEditor ? "Close Data Editor" : "Open Data Editor"}
-            </button>
-            {Object.keys(unitEdits).length > 0 && (
-              <button onClick={() => setUnitEdits({})} style={{ padding: "4px 10px", color: "red", border: "1px solid #faa", cursor: "pointer" }}>
-                Reset All Edits ({Object.keys(unitEdits).length})
-              </button>
-            )}
-            <button onClick={handleExportEdits} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer" }}>
-              Export Edits
-            </button>
-            <button onClick={() => importEditsRef.current?.click()} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer" }}>
-              Import Edits
-            </button>
-            <input ref={importEditsRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportEdits} />
+          <div style={{ flex: 1, overflowY: "auto", padding: "2px 8px 8px" }}>
+            {unitSearch
+              ? effectiveUnits
+                  .filter(u => u.levelOrder < 6 && u.start !== null && u.displayName.toLowerCase().includes(unitSearch.toLowerCase()))
+                  .sort((a, b) => b.start - a.start)
+                  .map(unit => {
+                    const isHidden = hiddenUnits.has(unit.id);
+                    const ancestorHidden = !isHidden && !isUnitVisible(unit.id, hiddenUnits);
+                    return (
+                      <div key={unit.id} style={{ display: "flex", alignItems: "center", paddingTop: 2, paddingBottom: 2, opacity: ancestorHidden ? 0.4 : 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={!isHidden}
+                          disabled={ancestorHidden}
+                          onChange={() => setHiddenUnits(prev => { const next = new Set(prev); if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id); return next; })}
+                          style={{ margin: "0 5px 0 0", flexShrink: 0 }}
+                        />
+                        <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "#999" : "#000" }}>
+                          {unit.displayName}
+                        </span>
+                      </div>
+                    );
+                  })
+              : renderUnitTree(null, 0)
+            }
           </div>
-        )}
-
-        {activeTab === "Export" && (
-          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-            <button onClick={handleExportSVG} style={{ padding: "4px 12px" }}>
-              Download SVG
-            </button>
-            <button onClick={handleExportPNG} style={{ padding: "4px 12px" }}>
-              Download PNG
-            </button>
-            <button onClick={handleCopyPNG} style={{ padding: "4px 12px" }}>
-              Copy PNG to Clipboard
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Main area: visualization + optional data editor sidebar */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        </div>
+      )}
 
       {/* Visualization Area — scroll container */}
       <div
@@ -2021,7 +2089,7 @@ if (showGSSP) {
           setEditingCell(null);
         };
 
-        const thStyle = (key) => ({
+        const thStyle = () => ({
           padding: "4px 6px",
           textAlign: "left",
           fontSize: 11,
@@ -2218,6 +2286,197 @@ if (showGSSP) {
           </div>
         );
       })()}
+
+      {/* Zone 3: Right Settings Panel */}
+      {settingsOpen && (
+        <div style={{
+          width: 280,
+          flexShrink: 0,
+          borderLeft: "1px solid #ccc",
+          display: "flex",
+          flexDirection: "column",
+          background: "#fafafa",
+          overflow: "hidden",
+        }}>
+          {/* Mini-tab bar */}
+          <div style={{ display: "flex", borderBottom: "1px solid #ccc", background: "#f0f0f0", flexShrink: 0 }}>
+            {["display","picks","export"].map(tab => (
+              <button
+                key={tab}
+                onClick={() => setSettingsTab(tab)}
+                style={{
+                  flex: 1,
+                  padding: "6px 4px",
+                  fontSize: 11,
+                  border: "none",
+                  borderBottom: settingsTab === tab ? "2px solid #333" : "2px solid transparent",
+                  background: settingsTab === tab ? "white" : "transparent",
+                  cursor: "pointer",
+                  fontWeight: settingsTab === tab ? "bold" : "normal",
+                }}
+              >{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "8px 10px", fontSize: 12 }}>
+            {settingsTab === "display" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Column Headers</div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                    Height:
+                    <input type="range" min="24" max="80" value={headerHeight} onChange={e => setHeaderHeight(Number(e.target.value))} style={{ flex: 1 }} />
+                    {headerHeight}px
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginTop: 4 }}>
+                    Font:
+                    <input type="range" min="8" max="22" value={headerFontSize} onChange={e => setHeaderFontSize(Number(e.target.value))} style={{ flex: 1 }} />
+                    {headerFontSize}px
+                  </label>
+                </div>
+                <div>
+                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Block Text</div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                    Size:
+                    <input type="range" min="6" max="16" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} style={{ flex: 1 }} />
+                    {fontSize}px
+                  </label>
+                  <div style={{ marginTop: 4 }}>
+                    <select value={fontFamily} onChange={e => setFontFamily(e.target.value)} style={{ fontSize: 11, width: "100%" }}>
+                      <option value="Arial, sans-serif">Arial</option>
+                      <option value="'Times New Roman', serif">Times New Roman</option>
+                      <option value="'Courier New', monospace">Courier New</option>
+                      <option value="Georgia, serif">Georgia</option>
+                      <option value="Verdana, sans-serif">Verdana</option>
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                    <label style={{ fontSize: 11 }}><input type="checkbox" checked={fontBold} onChange={e => setFontBold(e.target.checked)} /> Bold</label>
+                    <label style={{ fontSize: 11 }}><input type="checkbox" checked={fontItalic} onChange={e => setFontItalic(e.target.checked)} /> Italic</label>
+                    <label style={{ fontSize: 11 }}><input type="checkbox" checked={fontUnderline} onChange={e => setFontUnderline(e.target.checked)} /> Underline</label>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Labels</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {["horizontal","vertical"].map(o => (
+                      <label key={o} style={{ fontSize: 11 }}>
+                        <input type="radio" name="labelOrientation" value={o} checked={labelOrientation === o} onChange={() => setLabelOrientation(o)} />
+                        {" "}{o.charAt(0).toUpperCase() + o.slice(1)}
+                      </label>
+                    ))}
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, marginTop: 4 }}>
+                    <input type="checkbox" checked={contrastText} onChange={e => setContrastText(e.target.checked)} />
+                    Auto contrast
+                  </label>
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 10, color: "#666", marginBottom: 3 }}>Unit naming</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[["timescale","Time"],["stratigraphic","Strat"],["both","Both"]].map(([v,l]) => (
+                        <label key={v} style={{ fontSize: 11 }}>
+                          <input type="radio" name="labelMode" value={v} checked={labelMode === v} onChange={() => setLabelMode(v)} />
+                          {" "}{l}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                {scaleType === "equalSize" && (
+                  <div>
+                    <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Equal Size Level</div>
+                    <select value={equalSizeLevel} onChange={e => setEqualSizeLevel(Number(e.target.value))} style={{ fontSize: 11, width: "100%" }}>
+                      {columnConfig.map(col => (
+                        <option key={col.level} value={col.level}>{col.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Font Size Rules (by age)</div>
+                  {fontRules.map(rule => (
+                    <div key={rule.id} style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 4, fontSize: 11 }}>
+                      <input type="number" value={rule.minAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, minAge: Number(e.target.value) } : r))} style={{ width: 50 }} placeholder="Min" />
+                      <span>–</span>
+                      <input type="number" value={rule.maxAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, maxAge: Number(e.target.value) } : r))} style={{ width: 50 }} placeholder="Max" />
+                      <span>Ma</span>
+                      <input type="number" value={rule.fontSize} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, fontSize: Number(e.target.value) } : r))} style={{ width: 34 }} min={5} max={32} />
+                      <button onClick={() => setFontRules(fontRules.filter(r => r.id !== rule.id))} style={{ fontSize: 10, padding: "1px 4px" }}>✕</button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setFontRules([...fontRules, { id: String(Date.now()), minAge: 0, maxAge: 66, fontSize: fontSize }])}
+                    style={{ fontSize: 11, padding: "2px 8px", marginTop: 2 }}
+                  >+ Add Rule</button>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "picks" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 6 }}>Boundary Mode</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <label style={{ fontSize: 11 }}>
+                      <input type="radio" name="picksMode" value="auto" checked={picksMode === "auto"} onChange={() => setPicksMode("auto")} />
+                      {" "}Auto (deepest visible)
+                    </label>
+                    <label style={{ fontSize: 11 }}>
+                      <input type="radio" name="picksMode" value="adaptive" checked={picksMode === "adaptive"} onChange={() => setPicksMode("adaptive")} />
+                      {" "}Adaptive (zoom-aware rank)
+                    </label>
+                    <label style={{ fontSize: 11 }}>
+                      <input type="radio" name="picksMode" value="manual" checked={picksMode === "manual"} onChange={() => setPicksMode("manual")} />
+                      {" "}Manual
+                    </label>
+                  </div>
+                  {picksMode === "manual" && (
+                    <select
+                      value={manualPicksLevel ?? ""}
+                      onChange={e => setManualPicksLevel(e.target.value === "" ? null : Number(e.target.value))}
+                      style={{ fontSize: 11, marginTop: 6, width: "100%" }}
+                    >
+                      <option value="">Select Level</option>
+                      {columnConfig.map(col => (
+                        <option key={col.level} value={col.level}>{col.label}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                  <input type="checkbox" checked={showUncertainty} onChange={e => setShowUncertainty(e.target.checked)} />
+                  Show uncertainty
+                </label>
+                <label style={{ fontSize: 11 }}>
+                  Significant figures:
+                  <select value={picksSigFigs} onChange={e => setPicksSigFigs(Number(e.target.value))} style={{ marginLeft: 6, fontSize: 11 }}>
+                    {[3,4,5,6].map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
+
+            {settingsTab === "export" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button onClick={handleExportSVG} style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>Download SVG</button>
+                <button onClick={handleExportPNG} style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>Download PNG</button>
+                <button onClick={handleCopyPNG} style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>Copy PNG to Clipboard</button>
+                <hr style={{ border: "none", borderTop: "1px solid #ddd", margin: "4px 0" }} />
+                <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Data Edits</div>
+                {Object.keys(unitEdits).length > 0 && (
+                  <button onClick={() => setUnitEdits({})} style={{ padding: "4px 10px", color: "red", border: "1px solid #faa", cursor: "pointer", fontSize: 11 }}>
+                    Reset All Edits ({Object.keys(unitEdits).length})
+                  </button>
+                )}
+                <button onClick={handleExportEdits} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer", fontSize: 11 }}>Export Edits</button>
+                <button onClick={() => importEditsRef.current?.click()} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer", fontSize: 11 }}>Import Edits</button>
+                <input ref={importEditsRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportEdits} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       </div>
 

@@ -101,16 +101,21 @@ export function renderBlocks({
     const blockOrient = block.labelOrientation ?? labelOrientation;
     const blockFontSize = block.fontSize ?? fontSize;
 
-    // Screen-space dimensions for fitting
+    // Screen-space dimensions for fitting.
+    // orientWidth may be wider than width (e.g. Phanerozoic includes Super-Eon column).
+    const orientW = (block.orientWidth ?? block.width) * currentK;
     const screenW = block.width  * currentK;
     const screenH = block.height * currentK;
 
-    // Resolve "auto" → align with the longer axis
+    // Resolve "auto" → align with the longer axis, using orientW so that blocks
+    // without a visible parent (e.g. Phanerozoic) account for adjacent columns.
     const resolvedOrient = blockOrient === "auto"
-      ? (screenW >= screenH ? "horizontal" : "vertical")
+      ? (orientW >= screenH ? "horizontal" : "vertical")
       : blockOrient;
 
-    // For vertical text the label runs along block.height, so swap fit axes
+    // For vertical text the label runs along block.height, so swap fit axes.
+    // Fit width uses the actual drawn width (screenW), not the wider orientW,
+    // so text stays within the block's own painted area.
     const [fitW, fitH] = resolvedOrient === "vertical"
       ? [screenH, screenW]
       : [screenW, screenH];
@@ -126,8 +131,11 @@ export function renderBlocks({
     label.setAttribute("font-size",          String(fitSize / currentK));
     label.setAttribute("data-base-font-size", String(fitSize));
 
-    // Attributes read by applyCounterScale for dynamic re-fit on zoom
-    label.setAttribute("data-block-w",       String(block.width));
+    // Attributes read by applyCounterScale for dynamic re-fit on zoom.
+    // data-block-w  = orientation width (may include adjacent columns, e.g. Super-Eon for Phanerozoic)
+    // data-block-dw = drawn width (actual painted block — used for text fitting, not orientation)
+    label.setAttribute("data-block-w",       String(block.orientWidth ?? block.width));
+    label.setAttribute("data-block-dw",      String(block.width));
     label.setAttribute("data-block-h",       String(block.height));
     label.setAttribute("data-label",          labelText);
     label.setAttribute("data-user-font-size", String(blockFontSize));
