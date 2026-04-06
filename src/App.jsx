@@ -1,6 +1,5 @@
 import { renderPicks } from "./renderers/PicksRenderer";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import * as d3 from "d3";
 
 import { renderBlocks, computeFitAndWrap } from "./renderers/BlockRenderer";
@@ -316,6 +315,8 @@ function App() {
   const effectiveMarginRef = useRef(14);
   const hashDebounceRef = useRef(null);
   const timeAxisContextRef = useRef(null);
+  const canvasRef = useRef(null);
+  const rafHandleRef = useRef(null);
   const [scrollableSize, setScrollableSize] = useState(800);
   const [headerHeight, setHeaderHeight] = useState(() => _initPrefs.headerHeight ?? 48);
   const [headerFontSize, setHeaderFontSize] = useState(() => _initPrefs.headerFontSize ?? 13);
@@ -761,6 +762,119 @@ function App() {
       this.setAttribute("stroke-width", base / k);
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Canvas draw function (Phase 1: rectangles only) ──
+  const drawFrame = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+
+    // Resize canvas backing store if needed (handles window resize)
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width  = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      ctx.scale(dpr, dpr);
+    }
+
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const eM      = effectiveMarginRef.current;
+    const [vMin, vMax] = visibleDomainRef.current;
+    const lateral = lateralOffsetRef.current;
+
+    // Build scale from current visible domain
+    const allUnits    = effectiveUnits;
+    const visibleSet  = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
+
+    const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
+    const cols = [
+      { id: "time", type: "time" },
+      ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
+      { id: "picks", type: "picks" },
+    ];
+    const layout = computeLayout(cols, effectiveColumnWidths, MARGIN);
+
+    const scale = buildScale(scaleType, [vMin, vMax], [eM, cssH - eM], allUnits, equalSizeLevel);
+
+    // Draw white background
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    // Draw each visible block as a filled rectangle with a 0.5px border
+    visLevels.forEach(level => {
+      const levelUnits = allUnits.filter(u =>
+        u.levelOrder === level &&
+        u.start !== null &&
+        visibleSet.has(u.id)
+      ).map(u => ({ ...u, end: u.end ?? 0 }));
+
+      levelUnits.forEach(unit => {
+        const currentIndex = visLevels.indexOf(level);
+        const unitMap = UNIT_MAP;
+
+        let spanStartIndex = currentIndex;
+        let hasVisibleParent = false;
+        let parentId = unit.parent;
+        while (parentId) {
+          const parent = unitMap[parentId];
+          if (parent && visLevels.includes(parent.levelOrder)) { hasVisibleParent = true; break; }
+          parentId = parent?.parent;
+        }
+        if (!hasVisibleParent) spanStartIndex = 0;
+
+        let spanEndIndex = currentIndex;
+        for (let i = currentIndex + 1; i < visLevels.length; i++) {
+          const nextLevel = visLevels[i];
+          const hasDesc = allUnits.some(u => {
+            if (u.levelOrder !== nextLevel) return false;
+            if (!visibleSet.has(u.id)) return false;
+            let pid = u.parent;
+            while (pid) { if (pid === unit.id) return true; pid = unitMap[pid]?.parent; }
+            return false;
+          });
+          if (hasDesc) { spanEndIndex = i - 1; break; }
+          spanEndIndex = i;
+        }
+
+        const spanColumns = layout.filter(col =>
+          col.id !== "time" && col.id !== "picks" &&
+          visLevels.indexOf(col.id) >= spanStartIndex &&
+          visLevels.indexOf(col.id) <= spanEndIndex
+        );
+        if (spanColumns.length === 0) return;
+
+        const x = spanColumns[0].start + lateral;
+        const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
+        const y1 = scale(unit.start);
+        const y2 = scale(unit.end);
+        const y  = Math.min(y1, y2);
+        const h  = Math.abs(y2 - y1);
+
+        // Skip if entirely outside viewport
+        if (y > cssH || y + h < 0) return;
+
+        ctx.fillStyle = unit.icsColor || "#cccccc";
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(x, y, w, h);
+      });
+    });
+
+    // Schedule next frame
+    rafHandleRef.current = requestAnimationFrame(drawFrame);
+  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Start the canvas rAF loop; restart when drawFrame identity changes
+  useEffect(() => {
+    rafHandleRef.current = requestAnimationFrame(drawFrame);
+    return () => {
+      if (rafHandleRef.current) cancelAnimationFrame(rafHandleRef.current);
+    };
+  }, [drawFrame]);
 
   const [hoverUnit, setHoverUnit] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -1407,16 +1521,15 @@ if (showGSSP && picksColumn) {
       };
 
     } else {
-      // ===== DYNAMIC MODE: direct wheel handler, raw mouse events for pan =====
-      // D3 zoom is NOT used here — it adds a non-passive wheel listener that
-      // interferes with the scroll/zoom separation. We own the wheel event entirely.
+      // ===== DYNAMIC MODE: canvas + rAF loop handles rendering; direct wheel/mouse for pan =====
+      const canvasEl = canvasRef.current;
+      if (!canvasEl) return;
+
       let rafId = null;
       zoomBehaviorRef.current = null;
 
       // Helper: clamp a new [min, max] to the allowed domain while preserving span
       function clampDomain(newMin, newMax, span) {
-        // Guard: if the requested span exceeds the full allowed range, center it.
-        // This prevents both if-blocks from firing sequentially and shrinking the span.
         const fullSpan = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
         if (span > fullSpan) {
           return [dynamicMinAgeRef.current, dynamicMaxAgeRef.current];
@@ -1443,63 +1556,39 @@ if (showGSSP && picksColumn) {
       }
 
       const onWheel = (e) => {
-        e.preventDefault(); // always prevent: browser zoom (ctrl) or native scroll (plain)
+        e.preventDefault();
 
-        const eM     = effectiveMarginRef.current;
-        const h      = svgElement.clientHeight;
+        const eM   = effectiveMarginRef.current;
+        const h    = canvasEl.clientHeight;
         const [refMin, refMax] = visibleDomainRef.current;
-        const span   = refMax - refMin;
-        // Pan delta: amplified so a mouse notch moves a meaningful Ma distance.
+        const span = refMax - refMin;
+
         const panDelta  = e.deltaY * (e.deltaMode === 1 ? 100 : e.deltaMode === 2 ? 300 : 4);
-        // Zoom delta: NOT amplified — exponential zoom math is already sensitive.
-        // Using the pan multiplier here made zoom 4× too fast.
         const zoomDelta = e.deltaY * (e.deltaMode === 1 ?  30 : e.deltaMode === 2 ? 300 : 1);
 
         if (e.ctrlKey) {
-          // Cancel any pending pan RAF so it can't overwrite the zoom commit.
           if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-          // ── Zoom toward cursor ──
-          // Use offsetY for cursor position — it's in the SVG's own coordinate space,
-          // unaffected by scroll position or viewport offsets from the sticky layout.
-          // Fall back to clientY - rect.top only if offsetY is unavailable.
-          const rect    = svgElement.getBoundingClientRect();
-          const cursorY = (e.offsetY != null) ? e.offsetY : (e.clientY - rect.top);
-          const pct     = Math.max(0, Math.min(1, (cursorY - eM) / (h - 2 * eM)));
+
+          const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
+          const pct      = Math.max(0, Math.min(1, (cursorY - eM) / (h - 2 * eM)));
           const focalAge = refMin + pct * span;
 
           const fullSpan   = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
           const speedScale = Math.pow(span / fullSpan, 0.6);
           const kFactor    = Math.pow(2, zoomDelta * 0.003 * speedScale);
+          const newSpan    = Math.min(span * kFactor, fullSpan);
 
-          // Clamp newSpan to fullSpan so we never zoom out past the data extent.
-          // This ensures only one boundary can be hit at a time in the translation
-          // step below, preventing clampDomain's two if-blocks from both firing
-          // and shrinking the span (which shifts the focal age off the cursor).
-          const newSpan = Math.min(span * kFactor, fullSpan);
-
-          // Pin focalAge at position pct within the new span, then translate to
-          // boundary if needed.
           let newMin = focalAge - pct * newSpan;
           let newMax = focalAge + (1 - pct) * newSpan;
 
-          // Translate only — newSpan is already safe so only one branch can fire.
-          if (newMin < dynamicMinAgeRef.current) {
-            newMin = dynamicMinAgeRef.current;
-            newMax = newMin + newSpan;
-          }
-          if (newMax > dynamicMaxAgeRef.current) {
-            newMax = dynamicMaxAgeRef.current;
-            newMin = newMax - newSpan;
-          }
+          if (newMin < dynamicMinAgeRef.current) { newMin = dynamicMinAgeRef.current; newMax = newMin + newSpan; }
+          if (newMax > dynamicMaxAgeRef.current) { newMax = dynamicMaxAgeRef.current; newMin = newMax - newSpan; }
 
           if (newMin < newMax) {
+            // Write ref only — rAF loop picks it up next frame. No setState. No re-render.
             visibleDomainRef.current = [newMin, newMax];
-            flushSync(() => {
-              setVisibleDomain([newMin, newMax]);
-            });
           }
         } else {
-          // ── Pan along time axis ──
           const agePerPx = span / (h - 2 * eM);
           const shift    = panDelta * agePerPx;
           const [newMin, newMax] = clampDomain(refMin + shift, refMax + shift, span);
@@ -1507,21 +1596,21 @@ if (showGSSP && picksColumn) {
         }
       };
 
-      svgElement.addEventListener("wheel", onWheel, { passive: false });
+      canvasEl.addEventListener("wheel", onWheel, { passive: false });
 
       // Pan: track raw mouse displacement from mousedown, apply to frozen start domain
       let pan = null; // { startX, startY, domain, lateral }
 
       const onMouseDown = (e) => {
         if (e.button !== 0) return;
-        e.preventDefault(); // prevent text selection during drag
+        e.preventDefault();
         pan = {
           startX: e.clientX,
           startY: e.clientY,
           domain: [...visibleDomainRef.current],
           lateral: lateralOffsetRef.current
         };
-        svgElement.style.cursor = "grabbing";
+        canvasEl.style.cursor = "grabbing";
       };
 
       const onMouseMove = (e) => {
@@ -1532,9 +1621,7 @@ if (showGSSP && picksColumn) {
         // Axial pan (along the time axis)
         const [refMin, refMax] = pan.domain;
         const eM = effectiveMarginRef.current;
-        const liveH = svgElement.clientHeight;  // read live — svgHeight in closure may be stale
-        // Linear scale correctly computes "what age was at pixel eM-dy in the frozen
-        // domain" — i.e. the age that should now appear at the top after a dy-pixel drag.
+        const liveH = canvasEl.clientHeight;
         const refScale = d3.scaleLinear()
           .domain([refMin, refMax])
           .range([eM, liveH - eM]);
@@ -1543,16 +1630,15 @@ if (showGSSP && picksColumn) {
         const [clampedMin, clampedMax] = clampDomain(newMin, newMin + span, span);
         if (clampedMin < clampedMax) commitDomain(clampedMin, clampedMax);
 
-        // Lateral pan (perpendicular to time axis) — direct DOM for smooth feedback
+        // Lateral pan (perpendicular to time axis)
         const newLateral = pan.lateral + dx;
         lateralOffsetRef.current = newLateral;
-        svg.select("g").attr("transform", `translate(${newLateral}, 0)`);
         setLateralOffset(newLateral);
       };
 
       const onMouseUp = () => {
         pan = null;
-        svgElement.style.cursor = "grab";
+        canvasEl.style.cursor = "grab";
       };
 
       const onKeyDown = (event) => {
@@ -1585,12 +1671,11 @@ if (showGSSP && picksColumn) {
         } else {
           const delta = svgWidth * 0.1 * (event.key === "ArrowLeft" ? 1 : -1);
           lateralOffsetRef.current += delta;
-          svg.select("g").attr("transform", `translate(${lateralOffsetRef.current}, 0)`);
           setLateralOffset(lateralOffsetRef.current);
         }
       };
 
-      svgElement.addEventListener("mousedown", onMouseDown);
+      canvasEl.addEventListener("mousedown", onMouseDown);
       window.addEventListener("mousemove", onMouseMove);
       window.addEventListener("mouseup", onMouseUp);
       window.addEventListener("keydown", onKeyDown);
@@ -1598,8 +1683,8 @@ if (showGSSP && picksColumn) {
       return () => {
         if (rafId) cancelAnimationFrame(rafId);
         svgElement.removeEventListener("contextmenu", onContextMenu);
-        svgElement.removeEventListener("wheel", onWheel);
-        svgElement.removeEventListener("mousedown", onMouseDown);
+        canvasEl.removeEventListener("wheel", onWheel);
+        canvasEl.removeEventListener("mousedown", onMouseDown);
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
         window.removeEventListener("keydown", onKeyDown);
@@ -1891,11 +1976,38 @@ if (showGSSP && picksColumn) {
             height: "100%",
             pointerEvents: "none"
           }}>
+            {/* Canvas: handles dynamic mode rendering + events */}
+            <canvas
+              ref={canvasRef}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                cursor: "grab",
+                pointerEvents: zoomMode === "dynamic" ? "auto" : "none",
+                display: "block",
+              }}
+              onMouseMove={() => {
+                // Hit testing not yet implemented (Phase 4)
+                setHoverUnit(null);
+              }}
+              onMouseLeave={() => setHoverUnit(null)}
+            />
+            {/* SVG: used for transform mode rendering + events */}
             <svg
               ref={svgRef}
               width="100%"
               height="100%"
-              style={{ background: "white", cursor: "grab", pointerEvents: "auto" }}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                background: zoomMode === "transform" ? "white" : "transparent",
+                cursor: "grab",
+                pointerEvents: zoomMode === "transform" ? "auto" : "none",
+              }}
               onMouseMove={(e) => {
                 const unitId = e.target.getAttribute?.("data-unit-id");
                 if (unitId) {
