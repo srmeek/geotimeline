@@ -1,5 +1,6 @@
 import { renderPicks } from "./renderers/PicksRenderer";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import * as d3 from "d3";
 
 import { renderBlocks, computeFitAndWrap } from "./renderers/BlockRenderer";
@@ -1455,9 +1456,14 @@ if (showGSSP && picksColumn) {
         const zoomDelta = e.deltaY * (e.deltaMode === 1 ?  30 : e.deltaMode === 2 ? 300 : 1);
 
         if (e.ctrlKey) {
+          // Cancel any pending pan RAF so it can't overwrite the zoom commit.
+          if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
           // ── Zoom toward cursor ──
+          // Use offsetY for cursor position — it's in the SVG's own coordinate space,
+          // unaffected by scroll position or viewport offsets from the sticky layout.
+          // Fall back to clientY - rect.top only if offsetY is unavailable.
           const rect    = svgElement.getBoundingClientRect();
-          const cursorY = e.clientY - rect.top;
+          const cursorY = (e.offsetY != null) ? e.offsetY : (e.clientY - rect.top);
           const pct     = Math.max(0, Math.min(1, (cursorY - eM) / (h - 2 * eM)));
           const focalAge = refMin + pct * span;
 
@@ -1488,7 +1494,9 @@ if (showGSSP && picksColumn) {
 
           if (newMin < newMax) {
             visibleDomainRef.current = [newMin, newMax];
-            setVisibleDomain([newMin, newMax]);
+            flushSync(() => {
+              setVisibleDomain([newMin, newMax]);
+            });
           }
         } else {
           // ── Pan along time axis ──
