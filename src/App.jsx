@@ -317,11 +317,13 @@ function App() {
   const timeAxisContextRef = useRef(null);
   const canvasRef = useRef(null);
   const rafHandleRef = useRef(null);
+  const hitBoxesRef = useRef([]); // populated each frame, queried on mousemove
   const [scrollableSize, setScrollableSize] = useState(800);
   const [headerHeight, setHeaderHeight] = useState(() => _initPrefs.headerHeight ?? 48);
   const [headerFontSize, setHeaderFontSize] = useState(() => _initPrefs.headerFontSize ?? 13);
-  // Keep effective top margin in a ref so scroll sync closures always read the latest value
+  // Top margin tracks header height; bottom margin is fixed so the footer never moves.
   effectiveMarginRef.current = headerHeight + 8;
+  const BOTTOM_MARGIN = 8;
 
   const [leftPanelOpen, setLeftPanelOpen] = useState(() => _initPrefs.leftPanelOpen ?? true);
   const [settingsOpen, setSettingsOpen] = useState(() => _initPrefs.settingsOpen ?? false);
@@ -467,8 +469,228 @@ function App() {
     }
   }
 
+  // ── SVG export (dynamic mode): build an offscreen SVG matching the current canvas view ──
+  function buildSVGForExport() {
+    const viewH   = scrollContainerRef.current?.clientHeight || 800;
+    const eM      = effectiveMarginRef.current;
+    const [vMin, vMax] = visibleDomainRef.current;
+    const lateral = lateralOffsetRef.current;
+
+    const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
+    const cols = [
+      { id: "time", type: "time" },
+      ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
+      { id: "picks", type: "picks" },
+    ];
+    const exportLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
+    const rightEdge = (exportLayout[exportLayout.length - 1]?.end ?? 400) + 40; // +40 for GSSP markers
+    const totalWidth = rightEdge + Math.abs(lateral);
+
+    const svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    svgEl.setAttribute("width",  String(Math.round(totalWidth)));
+    svgEl.setAttribute("height", String(Math.round(viewH)));
+
+    const allUnits   = effectiveUnits;
+    const scaleUnits = scaleType === "equalSize"
+      ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
+      : allUnits;
+
+    const scale = buildScale(scaleType, [vMin, vMax], [eM, viewH - BOTTOM_MARGIN], scaleUnits, equalSizeLevel);
+
+    const svgD3 = d3.select(svgEl);
+    const zoomLayer     = svgD3.append("g").attr("transform", `translate(${lateral},0)`);
+    const backgroundLayer = zoomLayer.append("g");
+    const blockLayer      = zoomLayer.append("g");
+    const picksLayer      = zoomLayer.append("g");
+    const gsspLayer       = zoomLayer.append("g");
+
+    // White background
+    svgD3.insert("rect", ":first-child")
+      .attr("width", totalWidth).attr("height", viewH).attr("fill", "white");
+
+    // Time column
+    const timeColumn = exportLayout.find(col => col.id === "time");
+    if (timeColumn) {
+      const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bg.setAttribute("x",      timeColumn.start);
+      bg.setAttribute("y",      eM);
+      bg.setAttribute("width",  timeColumn.width);
+      bg.setAttribute("height", viewH - eM - BOTTOM_MARGIN);
+      bg.setAttribute("fill",   "white");
+      backgroundLayer.node().appendChild(bg);
+
+      const tickGroup = backgroundLayer.append("g").node();
+      renderTimeAxisTicks({ layer: tickGroup, scale, tickDomain: [vMin, vMax],
+        timeColumn, eM, svgH: viewH, timeUnit, fontSize, fontFamily });
+    }
+
+    // Blocks
+    const unitMap = UNIT_MAP;
+    const resolvedBlocks = [];
+
+    visLevels.forEach(level => {
+      const currentIndex = visLevels.indexOf(level);
+      const levelUnits = allUnits
+        .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+        .map(u => ({ ...u, end: u.end ?? 0 }));
+
+      levelUnits.forEach(unit => {
+        let spanStartIndex = currentIndex;
+        let hasVisibleParent = false;
+        let parentId = unit.parent;
+        while (parentId) {
+          const parent = unitMap[parentId];
+          if (parent && visLevels.includes(parent.levelOrder)) { hasVisibleParent = true; break; }
+          parentId = parent?.parent;
+        }
+        if (!hasVisibleParent) spanStartIndex = 0;
+
+        let spanEndIndex = currentIndex;
+        for (let i = currentIndex + 1; i < visLevels.length; i++) {
+          const nextLevel = visLevels[i];
+          const hasDesc = allUnits.some(u => {
+            if (u.levelOrder !== nextLevel || !isUnitVisible(u.id, hiddenUnits)) return false;
+            let pid = u.parent;
+            while (pid) { if (pid === unit.id) return true; pid = unitMap[pid]?.parent; }
+            return false;
+          });
+          if (hasDesc) { spanEndIndex = i - 1; break; }
+          spanEndIndex = i;
+        }
+
+        const spanColumns = exportLayout.filter(col =>
+          col.id !== "time" && col.id !== "picks" &&
+          visLevels.indexOf(col.id) >= spanStartIndex &&
+          visLevels.indexOf(col.id) <= spanEndIndex
+        );
+        if (spanColumns.length === 0) return;
+
+        const colBandStart = spanColumns[0].start;
+        const colBandWidth = spanColumns[spanColumns.length - 1].end - colBandStart;
+        const orientBandStart = !hasVisibleParent
+          ? (exportLayout.find(c => c.id !== "time" && c.id !== "picks")?.start ?? colBandStart)
+          : colBandStart;
+        const orientWidth = spanColumns[spanColumns.length - 1].end - orientBandStart;
+
+        const pos1 = scale(unit.start);
+        const pos2 = scale(unit.end);
+        const blockY = Math.min(pos1, pos2);
+        const blockHeight = Math.abs(pos2 - pos1);
+        if (blockY > viewH || blockY + blockHeight < 0) return;
+
+        const colConf = columnConfig.find(c => c.level === unit.levelOrder);
+        const matchingRule = fontRules.find(r =>
+          unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
+        );
+        const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+
+        resolvedBlocks.push({
+          unitId: unit.id,
+          x: colBandStart, y: blockY,
+          width: colBandWidth, orientWidth, height: blockHeight,
+          fill: unit.icsColor || "#ccc",
+          label: (() => {
+            const ts = unit.displayName, st = unit.displayNameStratigraphic;
+            if (labelMode === "stratigraphic") return st || ts;
+            if (labelMode === "both" && st) return `${ts} / ${st}`;
+            return ts;
+          })(),
+          labelX: colBandStart + colBandWidth / 2,
+          labelY: blockY + blockHeight / 2,
+          labelOrientation: colConf?.orientation ?? "auto",
+          fontSize: blockFontSize,
+          ageStart: unit.start, ageEnd: unit.end ?? 0,
+        });
+      });
+    });
+
+    renderBlocks({ svg: blockLayer.node(), blocks: resolvedBlocks,
+      fontSize, fontFamily, labelOrientation, contrastText, currentK: 1,
+      fontBold, fontItalic, fontUnderline });
+
+    // Picks
+    const picksColumn = exportLayout.find(col => col.id === "picks");
+    if (picksColumn) {
+      let boundaryAges = [];
+      let candidateLevels = [];
+      if (picksMode === "auto") {
+        candidateLevels = [...visLevels];
+      } else if (picksMode === "adaptive") {
+        const minPxGap = fontSize * 1.6;
+        let adaptLevel = null;
+        for (const level of [...visLevels].sort((a, b) => b - a)) {
+          const positions = allUnits
+            .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+            .filter(u => u.start >= vMin && u.start <= vMax)
+            .map(u => scale(u.start)).filter(p => isFinite(p)).sort((a, b) => a - b);
+          if (!positions.length) continue;
+          if (positions.length === 1) { adaptLevel = level; break; }
+          let minGap = Infinity;
+          for (let i = 1; i < positions.length; i++) minGap = Math.min(minGap, positions[i] - positions[i - 1]);
+          if (minGap >= minPxGap) { adaptLevel = level; break; }
+        }
+        if (adaptLevel === null) adaptLevel = [...visLevels].sort((a, b) => a - b)[0];
+        candidateLevels = adaptLevel !== null ? [adaptLevel] : [];
+      } else if (picksMode === "manual" && manualPicksLevel !== null) {
+        candidateLevels = visLevels.filter(lvl => lvl <= manualPicksLevel);
+      }
+
+      if (candidateLevels.length) {
+        const boundaryMap = new Map();
+        [...candidateLevels].sort((a, b) => b - a).forEach(level => {
+          allUnits
+            .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+            .forEach(u => {
+              if (!boundaryMap.has(u.start))
+                boundaryMap.set(u.start, { uncertainty: u.startUncertainty ?? null, approximate: u.startApproximate ?? false });
+            });
+        });
+        boundaryMap.forEach(({ uncertainty, approximate }, age) => boundaryAges.push({ age, uncertainty, approximate }));
+      }
+      if (!boundaryAges.some(b => b.age === 0)) boundaryAges.push({ age: 0, uncertainty: null, approximate: false });
+      const _seen = new Set();
+      boundaryAges = boundaryAges.filter(b => { if (_seen.has(b.age)) return false; _seen.add(b.age); return true; })
+        .sort((a, b) => b.age - a.age);
+
+      if (boundaryAges.length) {
+        renderPicks({ svg: picksLayer.node(), column: picksColumn, boundaryAges, scale,
+          height: viewH, margin: BOTTOM_MARGIN, showUncertainty, picksSigFigs, fontSize });
+      }
+    }
+
+    // GSSP / GSSA markers
+    if (showGSSP && picksColumn) {
+      const markerX = picksColumn.end + 4;
+      allUnits
+        .filter(u => u.ratifiedGSSP && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+        .forEach(unit => {
+          const yPos = scale(unit.start);
+          if (yPos < eM - 2 || yPos > viewH - BOTTOM_MARGIN + 2) return;
+          const m = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          m.setAttribute("x", markerX); m.setAttribute("y", yPos);
+          m.setAttribute("font-size", "8"); m.setAttribute("fill", "#DAA520");
+          m.setAttribute("dominant-baseline", "middle"); m.textContent = "▶";
+          gsspLayer.node().appendChild(m);
+        });
+      allUnits
+        .filter(u => u.ratifiedGSSA && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+        .forEach(unit => {
+          const yPos = scale(unit.start);
+          if (yPos < eM - 2 || yPos > viewH - BOTTOM_MARGIN + 2) return;
+          const m = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          m.setAttribute("x", markerX + 12); m.setAttribute("y", yPos);
+          m.setAttribute("font-size", "8"); m.setAttribute("fill", "#4169E1");
+          m.setAttribute("dominant-baseline", "middle"); m.textContent = "⏱";
+          gsspLayer.node().appendChild(m);
+        });
+    }
+
+    return svgEl;
+  }
+
   function handleExportSVG() {
-    const svgEl = svgRef.current;
+    const svgEl = zoomMode === "dynamic" ? buildSVGForExport() : svgRef.current;
     if (!svgEl) return;
     const serializer = new XMLSerializer();
     const svgStr = serializer.serializeToString(svgEl);
@@ -479,6 +701,24 @@ function App() {
     a.download = "geotimeline.svg";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // Crops the live canvas to viewport height and calls back with a PNG blob.
+  function buildCanvasPNGBlob(callback) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr    = window.devicePixelRatio || 1;
+    const clientW = Math.round(canvas.clientWidth);
+    const viewH   = scrollContainerRef.current?.clientHeight || Math.round(canvas.clientHeight);
+    const offscreen = document.createElement("canvas");
+    offscreen.width  = clientW;
+    offscreen.height = viewH;
+    const ctx = offscreen.getContext("2d");
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, clientW, viewH);
+    // Copy only the rendered viewport area from the (possibly tall) backing store
+    ctx.drawImage(canvas, 0, 0, clientW * dpr, viewH * dpr, 0, 0, clientW, viewH);
+    offscreen.toBlob(callback, "image/png");
   }
 
   function renderSVGtoPNGBlob(callback) {
@@ -506,18 +746,30 @@ function App() {
   }
 
   function handleExportPNG() {
-    renderSVGtoPNGBlob(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "geotimeline.png";
-      a.click();
-      URL.revokeObjectURL(url);
-    });
+    if (zoomMode === "dynamic") {
+      buildCanvasPNGBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "geotimeline.png";
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    } else {
+      renderSVGtoPNGBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "geotimeline.png";
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    }
   }
 
   function handleCopyPNG() {
-    renderSVGtoPNGBlob(blob => {
+    const doExport = zoomMode === "dynamic" ? buildCanvasPNGBlob : renderSVGtoPNGBlob;
+    doExport(blob => {
       navigator.clipboard.write([
         new ClipboardItem({ "image/png": blob })
       ]).catch(err => alert("Clipboard copy failed: " + err.message));
@@ -812,7 +1064,7 @@ function App() {
 
   const layout = computeLayout(columns, effectiveColumnWidths, MARGIN);
 
-  // ── Canvas draw function (Phase 1: rectangles only) ──
+  // ── Canvas draw function (Phase 2: rectangles + text) ──
   // Must be declared after effectiveColumnWidths and layout are initialized.
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
@@ -821,6 +1073,10 @@ function App() {
     const dpr = window.devicePixelRatio || 1;
     const cssW = canvas.clientWidth;
     const cssH = canvas.clientHeight;
+    // Use the scroll container's client height as the actual viewport height.
+    // canvas.clientHeight reflects the full scrollable extent (e.g. 5000px when zoomed),
+    // but only the viewport portion is ever visible.
+    const viewH = scrollContainerRef.current?.clientHeight ?? cssH;
 
     // Resize canvas backing store if needed (handles window resize)
     if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
@@ -829,11 +1085,12 @@ function App() {
       ctx.scale(dpr, dpr);
     }
 
-    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.clearRect(0, 0, cssW, viewH);
 
     const eM      = effectiveMarginRef.current;
     const [vMin, vMax] = visibleDomainRef.current;
     const lateral = lateralOffsetRef.current;
+    const hitBoxes = []; // reset each frame; queried on mousemove for tooltip
 
     const allUnits   = effectiveUnits;
     const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
@@ -846,12 +1103,23 @@ function App() {
     ];
     const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
 
-    const scale = buildScale(scaleType, [vMin, vMax], [eM, cssH - eM], allUnits, equalSizeLevel);
+    const scale = buildScale(scaleType, [vMin, vMax], [eM, viewH - BOTTOM_MARGIN], allUnits, equalSizeLevel);
 
     ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, cssW, cssH);
+    ctx.fillRect(0, 0, cssW, viewH);
+
+    // NTSC luma contrast — same formula as BlockRenderer.js
+    const contrastColor = (hex) => {
+      if (!hex || hex.length < 7) return "black";
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      return luma > 0.65 ? "black" : "white";
+    };
 
     visLevels.forEach(level => {
+      const colConf = columnConfig.find(c => c.level === level);
       const levelUnits = allUnits.filter(u =>
         u.levelOrder === level && u.start !== null && visibleSet.has(u.id)
       ).map(u => ({ ...u, end: u.end ?? 0 }));
@@ -898,18 +1166,284 @@ function App() {
         const y  = Math.min(y1, y2);
         const h  = Math.abs(y2 - y1);
 
-        if (y > cssH || y + h < 0) return;
+        if (y > viewH || y + h < 0) return;
+        hitBoxes.push({ id: unit.id, x, y, w, h });
 
+        // ── Rectangle ──
         ctx.fillStyle = unit.icsColor || "#cccccc";
         ctx.fillRect(x, y, w, h);
         ctx.strokeStyle = "rgba(0,0,0,0.4)";
         ctx.lineWidth = 0.5;
         ctx.strokeRect(x, y, w, h);
+
+        // ── Label ──
+        const labelText = (() => {
+          const ts = unit.displayName;
+          const st = unit.displayNameStratigraphic;
+          if (labelMode === "stratigraphic") return st || ts;
+          if (labelMode === "both" && st) return `${ts} / ${st}`;
+          return ts;
+        })();
+        const words = (labelText || "").trim().split(/\s+/).filter(Boolean);
+        if (!words.length) return;
+
+        // Per-column font size, with font rules taking highest priority
+        const matchingRule = fontRules.find(r =>
+          unit.start !== null && unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
+        );
+        const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+
+        // orientWidth: for units without a visible parent (e.g. Phanerozoic),
+        // use the full width from leftmost hierarchy column — same logic as SVG pipeline.
+        const leftmostHierarchyStart = frameLayout.find(col => col.id !== "time" && col.id !== "picks")?.start ?? x;
+        const orientWidth = !hasVisibleParent
+          ? (spanColumns[spanColumns.length - 1].end - leftmostHierarchyStart)
+          : w;
+
+        // In canvas there's no matrix transform — dimensions are already in CSS pixels.
+        const blockOrient = colConf?.orientation ?? "auto";
+        const resolvedOrient = blockOrient === "auto"
+          ? (orientWidth >= h ? "horizontal" : "vertical")
+          : blockOrient;
+
+        const [fitW, fitH] = resolvedOrient === "vertical" ? [h, w] : [w, h];
+        const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
+
+        const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, fontFamily, blockFontSize, 5);
+
+        const fontPrefix = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}`;
+        ctx.font = `${fontPrefix}${fitSize}px ${fontFamily}`;
+        ctx.fillStyle = contrastText ? contrastColor(unit.icsColor) : "black";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        const cx = x + w / 2;
+        const cy = y + h / 2;
+
+        // Clip to block bounds so labels never bleed into adjacent cells
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+
+        if (resolvedOrient === "vertical") {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillText(lines[0] || "", 0, 0);
+          ctx.restore();
+        } else {
+          const lineH = fitSize * 1.2;
+          const startY = cy - ((lines.length - 1) / 2) * lineH;
+          lines.forEach((line, i) => {
+            ctx.fillText(line, cx, startY + i * lineH);
+          });
+        }
+
+        ctx.restore(); // end clip
       });
     });
 
+    // ── Time axis ──
+    const timeColumn = frameLayout.find(col => col.id === "time");
+    if (timeColumn) {
+      // White background for time column
+      ctx.fillStyle = "white";
+      ctx.fillRect(timeColumn.start + lateral, eM, timeColumn.width, viewH - eM - BOTTOM_MARGIN);
+
+      const tickValues = d3.scaleLinear().domain([vMin, vMax]).ticks(40);
+      if (tickValues.length) {
+        const tickSpan = vMax - vMin;
+        const tickStep = tickValues.length > 1
+          ? Math.abs(tickValues[1] - tickValues[0])
+          : Math.max(0.001, tickSpan / 20);
+
+        const targetLabels = Math.max(4, Math.floor((viewH - eM - BOTTOM_MARGIN) / (fontSize * 2.5)));
+        const majorEvery   = Math.max(1, Math.round(tickValues.length / targetLabels));
+        const majorTicks   = tickValues.filter((_, i) => i % majorEvery === 0);
+
+        // Minor ticks — 4 subdivisions between each pair of majors
+        const minorTicks = [];
+        for (let i = 0; i < majorTicks.length - 1; i++) {
+          const a = majorTicks[i], b = majorTicks[i + 1];
+          const step = (b - a) / 5;
+          for (let j = 1; j < 5; j++) {
+            const age = a + j * step;
+            if (age >= vMin && age <= vMax) minorTicks.push(age);
+          }
+        }
+
+        ctx.strokeStyle = "black";
+        ctx.lineWidth = 0.7;
+        minorTicks.forEach(age => {
+          const pos = scale(age);
+          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          const tx = timeColumn.end + lateral;
+          ctx.beginPath();
+          ctx.moveTo(tx - 5, pos);
+          ctx.lineTo(tx, pos);
+          ctx.stroke();
+        });
+
+        ctx.font = `${fontSize}px ${fontFamily}`;
+        ctx.fillStyle = "black";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        let lastLabelY = -Infinity;
+        ctx.lineWidth = 1;
+        majorTicks.forEach(age => {
+          const pos = scale(age);
+          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          const tx = timeColumn.end + lateral;
+          ctx.strokeStyle = "black";
+          ctx.beginPath();
+          ctx.moveTo(tx - 12, pos);
+          ctx.lineTo(tx, pos);
+          ctx.stroke();
+          if (pos - lastLabelY >= fontSize * 1.2) {
+            lastLabelY = pos;
+            ctx.fillText(formatTickLabel(age, tickStep, timeUnit), tx - 16, pos);
+          }
+        });
+      }
+    }
+
+    // ── Picks column ──
+    const picksColumn = frameLayout.find(col => col.id === "picks");
+    if (picksColumn && visLevels.length) {
+      // Compute boundary ages (same logic as SVG pipeline, simplified for dynamic mode)
+      let boundaryAges = [];
+
+      let adaptivePicksLevel = null;
+      if (picksMode === "adaptive") {
+        const minPxGap = fontSize * 1.6;
+        const levelsFineFirst = [...visLevels].sort((a, b) => b - a);
+        for (const level of levelsFineFirst) {
+          const positions = allUnits
+            .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+            .filter(u => u.start >= vMin && u.start <= vMax)
+            .map(u => scale(u.start))
+            .filter(p => isFinite(p))
+            .sort((a, b) => a - b);
+          if (positions.length === 0) continue;
+          if (positions.length === 1) { adaptivePicksLevel = level; break; }
+          let minGap = Infinity;
+          for (let i = 1; i < positions.length; i++) minGap = Math.min(minGap, positions[i] - positions[i - 1]);
+          if (minGap >= minPxGap) { adaptivePicksLevel = level; break; }
+        }
+        if (adaptivePicksLevel === null) adaptivePicksLevel = [...visLevels].sort((a, b) => a - b)[0];
+      }
+
+      let candidateLevels;
+      if (picksMode === "auto") {
+        candidateLevels = [...visLevels];
+      } else if (picksMode === "adaptive") {
+        candidateLevels = adaptivePicksLevel !== null ? [adaptivePicksLevel] : [visLevels[0]];
+      } else if (picksMode === "manual" && manualPicksLevel !== null) {
+        candidateLevels = visLevels.filter(lvl => lvl <= manualPicksLevel);
+      } else {
+        candidateLevels = [];
+      }
+
+      if (candidateLevels.length) {
+        const sortedLevels = [...candidateLevels].sort((a, b) => b - a);
+        const boundaryMap = new Map();
+        sortedLevels.forEach(level => {
+          allUnits
+            .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+            .forEach(unit => {
+              if (!boundaryMap.has(unit.start)) {
+                boundaryMap.set(unit.start, {
+                  uncertainty: unit.startUncertainty ?? null,
+                  approximate: unit.startApproximate ?? false,
+                });
+              }
+            });
+        });
+        boundaryMap.forEach(({ uncertainty, approximate }, age) => {
+          boundaryAges.push({ age, uncertainty, approximate });
+        });
+      }
+
+      if (!boundaryAges.some(b => b.age === 0)) {
+        boundaryAges.push({ age: 0, uncertainty: null, approximate: false });
+      }
+      const _seen = new Set();
+      boundaryAges = boundaryAges
+        .filter(b => { if (_seen.has(b.age)) return false; _seen.add(b.age); return true; })
+        .sort((a, b) => a.age - b.age); // youngest first
+
+      // formatAge inline (same as PicksRenderer.js)
+      const formatAge = (age) => {
+        if (age === 0) return "0";
+        const magnitude = Math.floor(Math.log10(Math.abs(age)) + 1e-10);
+        const decimals = Math.max(0, picksSigFigs - 1 - magnitude);
+        return String(parseFloat(age.toFixed(decimals)));
+      };
+
+      ctx.font = `${fontSize}px ${fontFamily}`;
+      ctx.fillStyle = "black";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+
+      boundaryAges.forEach(({ age, uncertainty, approximate }) => {
+        const pos = scale(age);
+        if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+
+        const approxText = (showUncertainty && approximate) ? "\u007E" : "";
+        const ageText = formatAge(age);
+        const uncText = (showUncertainty && uncertainty !== null) ? ` \u00B1${uncertainty}` : "";
+        const labelStr = approxText + ageText + uncText;
+
+        const rightMargin = 4;
+        const tickLabelGap = 12;
+        const textWidth = ctx.measureText(labelStr).width;
+        const labelPadding = textWidth + tickLabelGap + rightMargin;
+
+        ctx.strokeStyle = "black";
+        ctx.lineWidth = 1;
+        const px = picksColumn.start + lateral;
+        const pe = picksColumn.end + lateral;
+        ctx.beginPath();
+        ctx.moveTo(px, pos);
+        ctx.lineTo(pe - labelPadding, pos);
+        ctx.stroke();
+
+        ctx.fillText(labelStr, pe - rightMargin, pos);
+      });
+    }
+
+    // ── GSSP / GSSA markers ──
+    if (showGSSP && picksColumn) {
+      const markerX = picksColumn.end + lateral + 4;
+      ctx.font = `8px ${fontFamily}`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+
+      // GSSP — gold triangle pointing right
+      ctx.fillStyle = "#DAA520";
+      allUnits
+        .filter(u => u.ratifiedGSSP === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+        .forEach(unit => {
+          const pos = scale(unit.start);
+          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          ctx.fillText("▶", markerX, pos);
+        });
+
+      // GSSA — blue clock symbol
+      ctx.fillStyle = "#4169E1";
+      allUnits
+        .filter(u => u.ratifiedGSSA === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+        .forEach(unit => {
+          const pos = scale(unit.start);
+          if (pos < eM - 2 || pos > viewH - BOTTOM_MARGIN + 2) return;
+          ctx.fillText("⏱", markerX + 12, pos);
+        });
+    }
+
+    hitBoxesRef.current = hitBoxes;
     rafHandleRef.current = requestAnimationFrame(drawFrame);
-  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel, fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules, labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Start the canvas rAF loop; restart when drawFrame identity changes
   useEffect(() => {
@@ -1556,7 +2090,7 @@ if (showGSSP && picksColumn) {
         e.preventDefault();
 
         const eM   = effectiveMarginRef.current;
-        const h    = canvasEl.clientHeight;
+        const h    = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
         const [refMin, refMax] = visibleDomainRef.current;
         const span = refMax - refMin;
 
@@ -1567,11 +2101,11 @@ if (showGSSP && picksColumn) {
           if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 
           const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
-          const pct      = Math.max(0, Math.min(1, (cursorY - eM) / (h - 2 * eM)));
+          const pct      = Math.max(0, Math.min(1, (cursorY - eM) / (h - eM - BOTTOM_MARGIN)));
           const focalAge = refMin + pct * span;
 
           const fullSpan   = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
-          const speedScale = Math.pow(span / fullSpan, 0.6);
+          const speedScale = Math.pow(span / fullSpan, 0.2);
           const kFactor    = Math.pow(2, zoomDelta * 0.003 * speedScale);
           const newSpan    = Math.min(span * kFactor, fullSpan);
 
@@ -1586,7 +2120,7 @@ if (showGSSP && picksColumn) {
             visibleDomainRef.current = [newMin, newMax];
           }
         } else {
-          const agePerPx = span / (h - 2 * eM);
+          const agePerPx = span / (h - eM - BOTTOM_MARGIN);
           const shift    = panDelta * agePerPx;
           const [newMin, newMax] = clampDomain(refMin + shift, refMax + shift, span);
           commitDomain(newMin, newMax);
@@ -1618,10 +2152,10 @@ if (showGSSP && picksColumn) {
         // Axial pan (along the time axis)
         const [refMin, refMax] = pan.domain;
         const eM = effectiveMarginRef.current;
-        const liveH = canvasEl.clientHeight;
+        const liveH = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
         const refScale = d3.scaleLinear()
           .domain([refMin, refMax])
-          .range([eM, liveH - eM]);
+          .range([eM, liveH - BOTTOM_MARGIN]);
         const newMin = refScale.invert(eM - dy);
         const span = refMax - refMin;
         const [clampedMin, clampedMax] = clampDomain(newMin, newMin + span, span);
@@ -1986,8 +2520,21 @@ if (showGSSP && picksColumn) {
                 pointerEvents: zoomMode === "dynamic" ? "auto" : "none",
                 display: "block",
               }}
-              onMouseMove={() => {
-                // Hit testing not yet implemented (Phase 4)
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const mx = e.clientX - rect.left;
+                const my = e.clientY - rect.top;
+                const hit = hitBoxesRef.current.find(
+                  b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h
+                );
+                if (hit) {
+                  const unit = effectiveUnits.find(u => u.id === hit.id);
+                  if (unit) {
+                    setHoverUnit(unit);
+                    setTooltipPos({ x: e.clientX, y: e.clientY });
+                    return;
+                  }
+                }
                 setHoverUnit(null);
               }}
               onMouseLeave={() => setHoverUnit(null)}
