@@ -10,6 +10,7 @@ Full rendering pipeline stable in vertical orientation. ICS 2024/12 data
 (189 units). Dynamic zoom mode default. This session focused on zoom/pan
 stability, GSSP/GSSA icon placement, Phanerozoic text orientation, zoom
 speed progressivity, and a data fix for the Pridoli/Ludlow boundary.
+A canvas-based rendering architecture has been decided upon to replace the SVG rendering pipeline, enabling 60fps zoom performance.
 
 ------------------------------------------------------------------------
 
@@ -364,30 +365,96 @@ Resizable, sortable, inline editing, color picker, yellow highlight for edits.
 
 ------------------------------------------------------------------------
 
-# Next Session Plan
+# Architectural Decision — Canvas Migration
 
-## Priority 1 — Zoom Centering (Continued Investigation)
--   Current math is correct for linear scale. If issue persists, investigate
-    whether React batching of `setVisibleDomain` during rapid wheel events
-    causes the domain to lag by one call, and consider using `useReducer` or
-    `flushSync` for immediate synchronous state commit.
--   Also check: is the issue only on trackpad (smooth scroll sends many small
-    events) vs mouse wheel (discrete notches)?
+## Decision
+Replace the SVG-based rendering pipeline with an HTML5 Canvas rendering pipeline to achieve 60fps zoom performance. The screen will render to a `<canvas>` element via a `requestAnimationFrame` loop. SVG export will be preserved as a separate on-demand rendering pass.
 
-## Priority 2 — Highlight Block on Hover
--   Brighten/outline hovered block rect via `data-unit-id` (direct DOM mutation,
-    no re-render needed).
+## Motivation
+Dynamic mode rebuilds the entire SVG DOM on every zoom event (~189 units × multiple elements each), taking 20–50ms per frame. This makes smooth 60fps zoom physically impossible regardless of JavaScript optimizations. Canvas redraws the same content in 2–5ms, well within the 16ms frame budget.
 
-## Priority 3 — Adaptive Tick Spacing
--   Tick intervals auto-adjust as zoom level changes (e.g. 1 Ma / 0.1 Ma
-    when zoomed into the Cenozoic).
+## What stays unchanged
+- All React state (visibleDomain, columnWidths, columnConfig, hiddenUnits, etc.)
+- All refs (visibleDomainRef, effectiveMarginRef, lateralOffsetRef, etc.)
+- `buildScale()` — pure JS, no DOM involvement, unchanged
+- `computeLayout()` — pure JS, unchanged
+- All UI panels, sidebar, settings tabs, data editor
+- HTML overlay elements (column headers, resize handles, tooltip)
+- URL hash state sync, localStorage persistence
+- All zoom/pan math (focal age, clamp, pan delta, etc.)
 
-## Priority 4 — Named Zoom Shortcuts
--   Dropdown in View tab to jump to full extent, Phanerozoic, Cenozoic,
-    Mesozoic, Paleozoic, Precambrian.
+## What changes
+- SVG element → `<canvas>` element
+- Single render `useEffect` (SVG teardown/rebuild) → `requestAnimationFrame` loop reading refs directly
+- `applyCounterScale` system → deleted entirely (canvas redraws from scratch each frame, no counter-scale needed)
+- `setVisibleDomain` during zoom gestures → deleted (rAF loop reads `visibleDomainRef.current` directly, no React re-render during gesture)
+- `flushSync` → deleted
+- `BlockRenderer.js` SVG rendering → canvas drawing functions
+- `PicksRenderer.js` SVG rendering → canvas drawing functions
+- SVG export → separate on-demand `renderToSVG()` pass using existing SVG construction logic
 
-## Priority 5 — Double-Click Zoom
--   Double-click a block to zoom in to its age range.
+## Zoom architecture after migration
+```js
+// On every wheel event — this is the entire zoom handler:
+visibleDomainRef.current = [newMin, newMax];
+// rAF loop picks it up next frame. No setState. No re-render.
+```
+
+The rAF loop runs continuously:
+```js
+requestAnimationFrame(() => {
+  const scale = buildScale(visibleDomainRef.current, ...);
+  const layout = computeLayout(...);
+  drawFrame(ctx, scale, layout, stateRefs);
+});
+```
+
+## Migration phases
+
+### Phase 1 — Canvas foundation + working zoom (current priority)
+- Replace `<svg>` with `<canvas>` in the JSX
+- Wire up `requestAnimationFrame` loop
+- Port block rectangle drawing (colors, borders) — no text yet
+- Port zoom/pan wheel handler to write refs only, no setState during gesture
+- Verify 60fps zoom with correct focal point before proceeding
+
+### Phase 2 — Text rendering
+- Port `computeFitAndWrap` to canvas (`ctx.measureText`, `ctx.fillText`)
+- Auto-orient text (horizontal vs vertical) based on block dimensions
+- Per-column font size overrides, bold/italic
+- Font rules (time-interval overrides)
+
+### Phase 3 — Picks column + time axis
+- Port picks column drawing (tick marks, labels, uncertainty)
+- Port time axis (major/minor ticks, dynamic spacing)
+- Adaptive tick spacing (now trivial — just redraw each frame)
+
+### Phase 4 — Overlays and finishing
+- GSSP/GSSA markers
+- Tooltip hit testing (maintain bounding box list per frame)
+- Contrast text logic
+- High-DPI canvas setup (`devicePixelRatio` scaling)
+
+### Phase 5 — SVG export
+- `renderToSVG(visibleDomain, layout, state)` function — constructs an offscreen SVG programmatically
+- Matches canvas output exactly
+- PNG export via `canvas.toBlob()` (already works)
+- Option to export current view or full extent
+
+## Architecture lessons (carry forward into canvas migration)
+1. `buildScale()` and `computeLayout()` are pure — pass their output into draw functions, never call them inside draw functions with side effects.
+2. All zoom/pan state lives in refs during gestures, React state only for settled view.
+3. `effectiveMarginRef` must be read at draw time, not captured in closures.
+4. Hit testing: maintain `hitBoxes = []` array, populated each frame by draw functions, queried on `mousemove`.
+5. High-DPI: set `canvas.width = clientWidth * devicePixelRatio`, `ctx.scale(dpr, dpr)` once after resize.
+6. The rAF loop must be cancelled on component unmount.
+7. React state changes (settings, column widths, etc.) are picked up automatically each frame — no special handling needed.
+
+## Known issues carried forward (to fix during migration)
+1. Zoom focal point drift — will be resolved naturally by Phase 1 (no setState during gesture).
+2. Non-linear scale focal point mismatch — Phase 1 allows using `buildScale().invert()` correctly since the scale is rebuilt every frame anyway.
+3. Picks rounding — carry forward to Phase 3.
+4. PNG export with external fonts — carry forward to Phase 5.
 
 ------------------------------------------------------------------------
 
@@ -397,50 +464,20 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Resume from 2026-04-05 session 3.
-Stack: React 19 + D3 v7 + Vite. SVG-driven geologic timescale visualizer.
+GeoTimeline — Canvas migration, Phase 1.
+Stack: React 19 + D3 v7 + Vite. SVG-driven geologic timescale visualizer being migrated to Canvas rendering for 60fps zoom.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).
-Dynamic zoom mode is default. Subepoch and Age columns hidden by default.
+
+Goal for this session: Replace SVG rendering with a Canvas + requestAnimationFrame pipeline. Get block rectangles drawing correctly with fluid 60fps zoom before adding text or other detail.
+
+See PROJECT_STATE.md — "Architectural Decision — Canvas Migration" for full plan, what changes, what stays the same, and phase breakdown.
 
 Architecture constraints (never break):
-- Single useEffect owns all SVG construction (clear → rebuild). Never split.
-- Second useEffect owns zoom/pan event binding (deps: [columnConfig, columnWidths, zoomMode]).
-- Third useEffect calls applyCounterScale(k) — must be declared after render effect.
-- applyCounterScale is a stable useCallback(fn,[]) in App() scope; re-wraps block labels on zoom using data-block-* DOM attributes and computeFitAndWrap (exported from BlockRenderer.js).
-- data-label-orient stores "auto"|"horizontal"|"vertical". "auto" re-resolved from screen dimensions in both renderBlocks and applyCounterScale (rotate transform added/removed dynamically).
-- data-block-w = orientWidth (for auto-orient, may include adjacent cols); data-block-dw = drawn width (for text fitting).
-- Two more useEffects manage scrollbar ↔ zoom sync. MARGIN=14 (constant, horizontal only). effectiveMarginRef.current = headerHeight+8 (used for scale range and ALL scroll sync math). Read ref at call time — never capture in closures.
-- Scroll sync formulas: forward ty = eM*(1-k) - scrollTop*(viewH-2*eM)/viewH; reverse scrollTop = (eM*(1-k)-ty)*viewH/(viewH-2*eM).
-- Two localStorage save useEffects (gt_prefs, gt_unitEdits).
-- buildScale() pure function: linear/log/equalSize(visible-only)/eraEqual.
-- computeLayout() accepts initialOffset=MARGIN (horizontal). columnConfig items carry orientation and fontSize per-column.
-- Layered SVG groups: backgroundLayer → blockLayer → picksLayer → gsspLayer.
-- ALL_UNITS / UNIT_MAP module-level constants. _initPrefs / _initUnitEdits / _initFromHash module-level IIFEs.
-- effectiveUnits = ALL_UNITS with unitEdits overlaid. isUnitVisible() walks ancestor chain.
-- transformRef / visibleDomainRef / lateralOffsetRef hold latest values for closures.
-- Block text elements carry data-block-w/dw/h/label/user-font-size/font-family/label-orient for applyCounterScale.
-- Block rects and label text both carry data-unit-id for hover tooltip.
-- Vertical orientation only — horizontal code fully deleted.
-- Column header: HTML overlay, position absolute, height=headerHeight (state, default 48, resizable). effectiveMarginRef keeps chart below header at all times.
-- Picks column: no right border, auto-expands via _picksMinWidth canvas measurement, tickLabelGap=12.
-
-Zoom/pan (dynamic mode):
-- Zoom (ctrlKey+wheel): SYNCHRONOUS — setVisibleDomain + visibleDomainRef.current directly, no RAF.
-- Pan (plain wheel): RAF-batched via commitDomain().
-- Separate deltas: panDelta = deltaY*4 (pixels), zoomDelta = deltaY*1.
-- Progressive zoom speed: speedScale = (span/fullSpan)^0.6.
-- Focal age: focalAge = refMin + pct*span (linear interpolation). Do NOT use scale.invert — equalSize/eraEqual invert maps across ALL units, biasing toward top.
-- Drag pan: d3.scaleLinear().domain([refMin,refMax]).range([eM,liveH-eM]).invert(eM-dy).
-
-Data notes:
-- Ludlow end corrected: 419.62 → 422.7 Ma (endUncertainty 1.36 → 1.6).
-- Pridoli (levelOrder 4, no child ages) now shows correctly and spans into Age column via spanColumns.
-- GSSP markers (▶ goldenrod) and GSSA markers (⏱ royal blue) both placed at picksColumn.end + offset.
-
-Working features: dual zoom modes, progressive zoom speed, synchronous zoom, arrow-key pan, URL share state (base64 hash), GSSP+GSSA markers (next to picks column), text wrapping + auto-shrink (5px min), auto-orient to longer axis (live on zoom, Phanerozoic uses orientWidth), per-column orientation/font override, bold/italic/underline, time-interval font rules, import/export unit edits, tooltip with edge clamping, scroll sync, four scale types, picks column (auto-width, no right border), data editor, filter tree, export tab, localStorage persistence, resizable column headers, linear time axis ticks.
-
-Known issue: zoom centering on cursor not yet fully resolved. Math is correct for linear scale (focalAge = refMin + pct*span); investigate React batching or trackpad smooth-scroll as next step.
-
-Priority next session: resolve zoom centering, then highlight block on hover, adaptive tick spacing, named zoom shortcuts, double-click zoom.
+- buildScale() and computeLayout() are pure functions — keep them that way.
+- All React state and refs are unchanged — canvas reads from refs directly in the rAF loop.
+- No setState during zoom gestures — visibleDomainRef.current only.
+- Single rAF loop owns all canvas drawing. Never split.
+- effectiveMarginRef.current = headerHeight + 8 — read at draw time.
+- HTML overlays (column headers, resize handles, tooltip) stay as-is.
 
 ------------------------------------------------------------------------
