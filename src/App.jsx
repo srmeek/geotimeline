@@ -1414,13 +1414,19 @@ if (showGSSP && picksColumn) {
 
       // Helper: clamp a new [min, max] to the allowed domain while preserving span
       function clampDomain(newMin, newMax, span) {
+        // Guard: if the requested span exceeds the full allowed range, center it.
+        // This prevents both if-blocks from firing sequentially and shrinking the span.
+        const fullSpan = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
+        if (span > fullSpan) {
+          return [dynamicMinAgeRef.current, dynamicMaxAgeRef.current];
+        }
         if (newMin < dynamicMinAgeRef.current) {
           newMin = dynamicMinAgeRef.current;
-          newMax = Math.min(dynamicMaxAgeRef.current, newMin + span);
+          newMax = newMin + span;
         }
         if (newMax > dynamicMaxAgeRef.current) {
           newMax = dynamicMaxAgeRef.current;
-          newMin = Math.max(dynamicMinAgeRef.current, newMax - span);
+          newMin = newMax - span;
         }
         return [newMin, newMax];
       }
@@ -1452,30 +1458,34 @@ if (showGSSP && picksColumn) {
           // ── Zoom toward cursor ──
           const rect    = svgElement.getBoundingClientRect();
           const cursorY = e.clientY - rect.top;
-          // pct: cursor's fractional position within the drawable area [eM, h-eM].
           const pct     = Math.max(0, Math.min(1, (cursorY - eM) / (h - 2 * eM)));
-          // focalAge: age currently under the cursor.
-          // Using linear interpolation in age-space (refMin + pct*span) is exact for
-          // linear scale and gives correct temporal anchoring for non-linear scales.
-          // scale.invert is NOT used here because for equalSize/eraEqual it maps
-          // cursorY into the distribution of ALL units, not just visible ones,
-          // causing the focal age to be biased toward the youngest units (top).
           const focalAge = refMin + pct * span;
-          // zoomDelta>0 = scroll down = zoom out (larger span); <0 = zoom in.
-          // speedScale compresses the exponent at high zoom so each notch produces a
-          // proportionally smaller change — the user perceives consistent visual speed.
+
           const fullSpan   = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
           const speedScale = Math.pow(span / fullSpan, 0.6);
           const kFactor    = Math.pow(2, zoomDelta * 0.003 * speedScale);
-          const newSpan  = span * kFactor;
-          const [newMin, newMax] = clampDomain(
-            focalAge - pct * newSpan,
-            focalAge + (1 - pct) * newSpan,
-            newSpan
-          );
-          // Bypass RAF batching for zoom — apply synchronously so focal point stays
-          // under the cursor. RAF accumulation across multiple wheel events causes
-          // the perceived "jump" because intermediate states are skipped.
+
+          // Clamp newSpan to fullSpan so we never zoom out past the data extent.
+          // This ensures only one boundary can be hit at a time in the translation
+          // step below, preventing clampDomain's two if-blocks from both firing
+          // and shrinking the span (which shifts the focal age off the cursor).
+          const newSpan = Math.min(span * kFactor, fullSpan);
+
+          // Pin focalAge at position pct within the new span, then translate to
+          // boundary if needed.
+          let newMin = focalAge - pct * newSpan;
+          let newMax = focalAge + (1 - pct) * newSpan;
+
+          // Translate only — newSpan is already safe so only one branch can fire.
+          if (newMin < dynamicMinAgeRef.current) {
+            newMin = dynamicMinAgeRef.current;
+            newMax = newMin + newSpan;
+          }
+          if (newMax > dynamicMaxAgeRef.current) {
+            newMax = dynamicMaxAgeRef.current;
+            newMin = newMax - newSpan;
+          }
+
           if (newMin < newMax) {
             visibleDomainRef.current = [newMin, newMax];
             setVisibleDomain([newMin, newMax]);
