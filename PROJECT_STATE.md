@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-06 (session 5)*
+*Last Updated: 2026-04-17 (session 6)*
 
 ------------------------------------------------------------------------
 
@@ -11,9 +11,11 @@ Full rendering pipeline stable in canvas (dynamic) mode. ICS 2024/12 data
 Phase 5. All rendering, export, and interaction features now work in dynamic
 mode. SVG/transform mode is preserved as a fallback.
 
-Session 5 focused entirely on fixing zoom and pan interactions across all
-scale modes (Linear, Log, Equal Size, Era Equal). Most of the rendering
-pipeline bugs are resolved; one pan snap issue on drag release remains.
+Session 6 refactored zoom math into a unit-tested pure-function library
+(`src/lib/scale.js`, 17 vitest cases) and fixed three correctness bugs plus
+a canvas-stretch-on-pan layout bug. Next up: extract `TimelineCanvas`
+component (Phase 3), then dirty-flag rAF (Phase 4), then memoization pass
+(Phase 5).
 
 ------------------------------------------------------------------------
 
@@ -29,7 +31,16 @@ pipeline bugs are resolved; one pan snap issue on drag release remains.
     down cleanly. Third `useEffect` re-applies counter-scale after each render.
 -   Two more `useEffect`s manage scrollbar ↔ zoom state sync.
 -   Two more `useEffect`s persist preferences to `localStorage`.
--   `buildScale()` is a pure function returning one of four scale impls.
+-   **`src/lib/scale.js`** — pure-function math library:
+    `buildScale`, `buildViewScale`, `computeZoomedDomain`, `clampDomain`,
+    `computeLayout`, `formatTickLabel`. No React/DOM deps. 17 vitest cases
+    in `src/lib/__tests__/scale.test.js` cover round-trip invariants,
+    focal-point-under-cursor invariant, clamp edge cases, and layout geometry.
+-   `buildViewScale` is the single source of truth for the "view scale" used
+    by both `drawFrame` and `buildSVGForExport` — guarantees live/export parity.
+-   `computeZoomedDomain` performs focal-point zoom anchoring in **g-space**
+    (a unit-interval parametrization of each scale type). Pixel fractions are
+    linear in g under `buildViewScale`, so one formula works for all scale types.
 -   `computeLayout()` accepts `initialOffset` (horizontal pixel offset,
     equals `MARGIN` constant = 14px).
 -   Layered SVG groups (transform mode): `backgroundLayer` → `blockLayer`
@@ -69,6 +80,21 @@ pipeline bugs are resolved; one pan snap issue on drag release remains.
     read from `scrollContainerRef` so focal-age pct, agePerPx, and pan
     refScale all use viewport pixels, not full canvas pixels.
 
+## Canvas CSS vs Backing-Store Sizing (session 6 fix)
+
+-   **Bug**: Sticky wrapper had `height: 100%`, which resolved to the spacer's
+    `scrollableSize` (e.g. 8000px when zoomed 10×). The canvas inside inherited
+    100% of that. But `drawFrame` sized the backing store to `viewH * dpr`
+    (~800 × dpr). Browser stretched the viewH-tall backing store to fill the
+    scrollableSize-tall CSS box → **all canvas content vertically stretched
+    by factor k at any zoom level** (visible most clearly when panning stops).
+    DOM overlays (tooltip, SVG ticks) were unaffected, confirming the stretch
+    is a canvas-CSS/backing mismatch, not a math error.
+-   **Fix**: New `viewportH` state, tracked via a `ResizeObserver` on
+    `scrollContainerRef`. Sticky wrapper now uses `height: viewportH || "100%"`
+    so its CSS height equals the scroll container's viewport, matching the
+    backing store. Canvas CSS = viewportH = backing store / dpr → no stretch.
+
 ## Counter-Scale (Transform Mode Only)
 
 -   `applyCounterScale(k)` is a stable `useCallback(fn, [])` defined in
@@ -100,25 +126,28 @@ pipeline bugs are resolved; one pan snap issue on drag release remains.
 
 ## Zoom / Pan Architecture (Dynamic Mode)
 
--   **Wheel zoom** (`ctrlKey` = true): synchronous — updates `visibleDomainRef`
-    directly (no RAF batching). `h = scrollContainerRef.current.clientHeight`
-    for correct focal age calculation.
+-   **Wheel zoom** (`ctrlKey` = true): synchronous — calls
+    `computeZoomedDomain({scaleType, vMin, vMax, fullMin, fullMax, eM, viewH,
+    units, equalSizeLevel, cursorY, zoomFactor})` from `lib/scale.js`. Works
+    uniformly for linear, log, equalSize, eraEqual (see g-space below).
 -   **Wheel pan** (`ctrlKey` = false): pure pixel arithmetic —
     `shift = panDelta * (span / viewportPx)` where `viewportPx = h - eM`.
     Scale-type-invariant; no `buildScale` call.
 -   **Drag pan**: ref-only updates during drag (`visibleDomainRef.current` only,
     no `commitDomain`/`setVisibleDomain`). Single `setVisibleDomain` flush on
-    `mouseUp`. `shift = -dy * (span / viewportPx)`.
--   **Scroll suppression during drag**: `isScrollSyncing.current = true` on
-    `mouseDown`, deferred `false` via `setTimeout(0)` after `setVisibleDomain`
-    on `mouseUp` (to cover the async scroll event from scroll-sync useEffect).
+    `mouseUp`.
+-   **handleScroll guard**: `if (zoomMode !== "transform") return;` — dynamic
+    mode's scrollbar is one-way indicator only. `visibleDomain` drives scroll
+    position; scroll events never write back. Replaces the old `setTimeout(0)`
+    workaround for `isScrollSyncing` race.
 -   **Progressive zoom speed**: `speedScale = (span/fullSpan)^0.2`.
--   **Focal age (linear/log)**: `buildScale().invert(cursorY)` with correct
-    `[eM, h]` range.
--   **Focal age (equalSize/eraEqual)**: virtual-canvas invert — builds
-    `fullScale` over `[fullMin, fullMax]` → `[0, virtualH]`, applies
-    `pixelOffset = fullScale(refMin)`, then
-    `focalAge = fullScale.invert(cursorY - eM + pixelOffset)`.
+-   **Focal age — g-space anchoring**: `computeZoomedDomain` builds a unit-
+    interval parametrization `g(age) ∈ [0,1]` via `buildScale(scaleType,
+    [fullMin,fullMax], [0,1], ...)`. Pixel fractions are linear in g under
+    `buildViewScale`, so anchoring `newGMin = gFocal - pxFrac · newGSpan`
+    guarantees the focal age stays under the cursor for ANY scale type.
+    Age bounds are recovered via `g.invert`. Replaces the old age-fraction
+    math which drifted for equalSize/eraEqual.
 
 ## Equal Size / Era Equal Scale Architecture
 
@@ -126,12 +155,18 @@ Fixed-partition scales — all slots (or all 4 eras) are always laid out
 equally across the full virtual height. Zooming is handled by narrowing
 `[vMin, vMax]` and translating the virtual canvas, NOT by filtering slots.
 
--   **drawFrame scale construction**: for `equalSize`/`eraEqual`, builds
-    `fullScale` over `[dynamicMinAge, dynamicMaxAge]` → `[0, virtualH]` where
-    `virtualH = (viewH - eM) * (fullSpan / visSpan)`. Then:
+-   **`buildViewScale`** (in `lib/scale.js`) is the single source of truth.
+    Both `drawFrame` and `buildSVGForExport` call it — live/export cannot drift.
+-   For equalSize/eraEqual, `buildViewScale` builds `fullScale` over
+    `[fullMin, fullMax]` → `[0, virtualH]` where
+    **`virtualH = viewportH / gSpan`** and `gSpan = g(vMax) - g(vMin)` via a
+    unit-interval parametrization. Then
     `scale = age => fullScale(age) - fullScale(vMin) + eM`.
--   **buildSVGForExport**: same virtual-canvas pattern using `dynamicMinAge`/
-    `dynamicMaxAge` component variables.
+-   **Prior bug (fixed session 6)**: `virtualH = viewportH · (fullSpan / visSpan)`
+    used **age** span, which is not pixel span for non-linear scales. It
+    over/under-filled the viewport; the error was partly masked by a
+    compensating zoom-math error that also used age-fractions. Using g-span
+    fixes both.
 -   **buildScale itself is stateless w.r.t. zoom** — `domain` param is used
     only for tick filtering, not slot layout.
 
@@ -326,32 +361,31 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 
 # Known Issues
 
-1.  **Drag pan snap/stretch on release** — on `mouseUp`, `setVisibleDomain`
-    triggers the scroll-sync `useEffect`, which sets `container.scrollTop`.
-    That scroll assignment fires `handleScroll` asynchronously. The
-    `isScrollSyncing` guard uses `setTimeout(0)` to defer the reset, but
-    this does not reliably cover the async scroll event in all browsers.
-    `handleScroll` then overwrites `visibleDomainRef` with a scroll-derived
-    value that doesn't match where the drag ended — causing a visible snap.
-    **Root cause**: `isScrollSyncing` is set and cleared synchronously inside
-    the scroll-sync `useEffect` (`true` → `container.scrollTop =` → `false`),
-    so `handleScroll` (which fires from the native scroll event, asynchronously)
-    always sees `isScrollSyncing = false`. The `setTimeout(0)` in `onMouseUp`
-    doesn't help because the sync `useEffect` has already cleared the flag.
-    **Next approach**: Either (a) remove `handleScroll` from dynamic mode
-    entirely (scroll events should not drive `visibleDomain` in dynamic mode —
-    the scrollbar is decorative/indicator-only), or (b) track `isDragging` as
-    a separate ref and check it in `handleScroll`.
+1.  **Drag pan snap on release** — RESOLVED (session 6). Root cause was
+    `handleScroll` writing back into `visibleDomain` in dynamic mode.
+    Fix: early-return in `handleScroll` when `zoomMode !== "transform"`.
+    Scrollbar is now strictly one-way (decorative indicator).
+    `setTimeout(0)` workaround removed.
 
-2.  **Picks rounding** — epsilon fix applied to `formatAge`; needs browser verify.
+2.  **Canvas vertical stretch on pan/zoom** — RESOLVED (session 6). Root
+    cause was sticky wrapper `height: 100%` resolving to spacer's
+    `scrollableSize` while backing store was `viewH * dpr`. Fix: track
+    `viewportH` via ResizeObserver and apply to sticky wrapper height.
 
-3.  **PNG export with external fonts** — canvas rasterization may not embed
+3.  **Picks rounding** — epsilon fix applied to `formatAge`; needs browser verify.
+
+4.  **PNG export with external fonts** — canvas rasterization may not embed
     custom web fonts; system fonts (Arial etc.) are safe.
 
-4.  **Scroll sync formula uses symmetric margin** — forward/reverse scroll
+5.  **Scroll sync formula uses symmetric margin** — forward/reverse scroll
     sync formulas still use `2 * eM` (symmetric), but top/bottom margins are
     now asymmetric. Minor inconsistency in transform mode; not visible in
     practice since dynamic mode is the default.
+
+6.  **eraEqual uses hardcoded era boundaries** — `buildScale` for eraEqual
+    hardcodes the four era start/end ages. Editing a Cenozoic start date
+    in the data editor will not re-layout eraEqual. Low priority; flag
+    next time eraEqual is touched.
 
 ------------------------------------------------------------------------
 
@@ -412,6 +446,24 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
     no protection against the native `scroll` event, which fires asynchronously
     after `container.scrollTop` is assigned. In dynamic mode, `handleScroll`
     should not drive `visibleDomain` at all — the scrollbar is an indicator.
+23. Pure math belongs in `src/lib/` with vitest coverage, not inline in
+    components. 17 tests now cover `buildScale` round-trip, `buildViewScale`
+    viewport mapping, zoom focal-point invariant, `clampDomain`, `computeLayout`.
+    Pre-commit hook at `.git/hooks/pre-commit` runs `npm test`.
+24. Focal-point zoom generalizes cleanly via **g-space**: parametrize every
+    scale type into a unit interval `g(age) ∈ [0,1]`, then anchor in g-space
+    where pixel-fraction == g-fraction for all scale types. One formula
+    (`newGMin = gFocal - pxFrac · newGSpan`) works for linear/log/equalSize/
+    eraEqual. Adding a 5th scale type means implementing `g`/`g.invert` only.
+25. `buildViewScale`'s `virtualH` for non-linear scales MUST be derived from
+    g-span (`viewportH / gSpan`), not age-span. Using `fullSpan/visSpan`
+    over/under-fills the viewport for equalSize/eraEqual.
+26. Canvas CSS height must match backing-store height / dpr. If the canvas's
+    CSS parent is a sticky wrapper with `height: 100%` inside a spacer that's
+    `scrollableSize` tall, canvas CSS = scrollableSize while backing store =
+    `viewH * dpr` → browser stretches content vertically by factor
+    `scrollableSize / viewH`. Size the sticky wrapper to viewport height
+    (via ResizeObserver on the scroll container), not 100% of the spacer.
 
 ------------------------------------------------------------------------
 
@@ -438,9 +490,10 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Canvas migration complete (Phases 1–5). Zoom/pan interactions
-fixed for all scale modes in session 5.
-Stack: React 19 + D3 v7 + Vite. Geologic timescale visualizer.
+GeoTimeline — Canvas migration complete (Phases 1–5). Session 6 extracted
+zoom math into `src/lib/scale.js` (unit-tested, 17 vitest cases) and fixed
+three correctness bugs + a canvas-stretch layout bug.
+Stack: React 19 + D3 v7 + Vite + Vitest. Geologic timescale visualizer.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).
 Dynamic mode (canvas + rAF loop) is the default and primary rendering path.
 Transform mode (SVG + D3 zoom) is retained as a fallback.
@@ -448,8 +501,16 @@ Transform mode (SVG + D3 zoom) is retained as a fallback.
 See PROJECT_STATE.md for full architecture, feature status, and lessons.
 
 Architecture constraints (never break):
-- buildScale() and computeLayout() are pure functions.
+- Pure math lives in src/lib/scale.js (buildScale, buildViewScale,
+  computeZoomedDomain, clampDomain, computeLayout, formatTickLabel).
+  Tested in src/lib/__tests__/scale.test.js. Pre-commit hook runs npm test.
 - buildScale() is stateless w.r.t. zoom — never filter slots by visible domain.
+- buildViewScale() is the single view-scale source for drawFrame AND
+  buildSVGForExport — export must not drift from live.
+- computeZoomedDomain() anchors in g-space (unit-interval parametrization)
+  — one formula for all scale types. Do NOT reintroduce age-fraction math.
+- buildViewScale virtualH for non-linear scales = viewportH / gSpan,
+  NOT viewportH * (fullSpan/visSpan). Age-span is not pixel-span.
 - All React state and refs unchanged — canvas reads from refs in rAF loop.
 - No setState during zoom gestures — visibleDomainRef.current only.
 - No setState during drag pan — ref-only; single flush on mouseUp.
@@ -459,18 +520,19 @@ Architecture constraints (never break):
   or culling (removed in session 5). Still used in SVG/export path.
 - viewH = scrollContainerRef.current.clientHeight (NOT canvas.clientHeight).
 - Canvas backing store sized to viewH*dpr (not cssH*dpr).
+- Sticky canvas wrapper height MUST match viewportH (tracked via
+  ResizeObserver), NOT 100% of the spacer — otherwise canvas content
+  stretches vertically by scrollableSize/viewH.
 - ctx.setTransform(dpr,0,0,dpr,0,0) applied every frame (not only on resize).
 - Clip region [0,0,cssW,viewH] set via ctx.save()/ctx.clip() each frame.
-- equalSize/eraEqual scale in drawFrame: virtual-canvas pattern —
-  fullScale over [fullMin,fullMax]→[0,virtualH], offset by fullScale(vMin).
 - Wheel/drag pan: pure pixel arithmetic, no buildScale call.
+- handleScroll returns early when zoomMode !== "transform". Scrollbar in
+  dynamic mode is one-way indicator; never writes back to visibleDomain.
 - hitBoxesRef populated each frame for tooltip hit testing.
 - Export: buildSVGForExport() for SVG, buildCanvasPNGBlob() for PNG.
-- isScrollSyncing does NOT reliably block handleScroll in dynamic mode.
-  Priority fix: remove handleScroll's domain-write in dynamic mode entirely.
 
-Open issue: drag pan snaps/stretches on release (handleScroll overwrites
-domain after setVisibleDomain triggers scroll-sync useEffect on mouseUp).
-Fix: check isDragging ref in handleScroll, or skip domain write in dynamic mode.
+Next up: Phase 3 (extract TimelineCanvas component), Phase 4 (dirty-flag
+rAF + precompute block geometry), Phase 5 (memoize effectiveUnits,
+_picksMinWidth, _hc, fullScale).
 
 ------------------------------------------------------------------------

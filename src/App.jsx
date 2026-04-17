@@ -1,9 +1,17 @@
 import { renderPicks } from "./renderers/PicksRenderer";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 
 import { renderBlocks, computeFitAndWrap } from "./renderers/BlockRenderer";
 import geologicTime from "./data/geologicTime.json";
+import {
+  buildScale,
+  buildViewScale,
+  clampDomain,
+  computeLayout,
+  computeZoomedDomain,
+  formatTickLabel,
+} from "./lib/scale.js";
 
 const ICS_MIN_AGE = 0;
 const ICS_MAX_AGE = 4567.30;
@@ -44,37 +52,6 @@ function isUnitVisible(unitId, hiddenUnits) {
     pid = UNIT_MAP[pid]?.parent;
   }
   return true;
-}
-
-function formatTickLabel(age, tickStep, timeUnit) {
-  if (timeUnit === "Ga") {
-    const ga = age / 1000;
-    const gaStep = tickStep / 1000;
-    const decimals = gaStep >= 0.1 ? 1 : gaStep >= 0.01 ? 2 : gaStep >= 0.001 ? 3 : 4;
-    return ga.toFixed(decimals) + " Ga";
-  }
-  if (timeUnit === "ka") {
-    const ka = age * 1000;
-    const kaStep = tickStep * 1000;
-    const decimals = kaStep >= 1 ? 0 : kaStep >= 0.1 ? 1 : kaStep >= 0.01 ? 2 : 3;
-    return ka.toFixed(decimals) + " ka";
-  }
-  // Ma
-  const decimals = tickStep >= 1 ? 0 : tickStep >= 0.1 ? 1 : tickStep >= 0.01 ? 2 : 3;
-  return age.toFixed(decimals) + " Ma";
-}
-
-function computeLayout(columns, columnWidths, initialOffset = 0) {
-  let offset = initialOffset;
-
-  return columns.map(col => {
-    const width = columnWidths[col.id] ?? columnWidths[col.level] ?? 80;
-    const start = offset;
-    const end = start + width;
-    offset = end;
-
-    return { ...col, start, width, end };
-  });
 }
 
 /**
@@ -163,153 +140,6 @@ function renderTimeAxisTicks({ layer, scale, tickDomain, timeColumn, eM, svgH, t
   });
 }
 
-function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
-  if (scaleType === "linear") {
-    return d3.scaleLinear().domain(domain).range(range);
-  }
-
-  if (scaleType === "log") {
-    const logMin = Math.log(domain[0] + 1);
-    const logMax = Math.log(domain[1] + 1);
-    const linearScale = d3.scaleLinear().domain([logMin, logMax]).range(range);
-    const fn = age => linearScale(Math.log(age + 1));
-    fn.invert = pixel => {
-      const logVal = linearScale.invert(pixel);
-      return Math.exp(logVal) - 1;
-    };
-    fn.ticks = () => {
-      const result = [];
-      if (domain[0] <= 0) result.push(0);
-      for (let mag = -4; mag <= 4; mag++) {
-        for (const mult of [1, 2, 5]) {
-          const v = mult * Math.pow(10, mag);
-          if (v > 0 && v >= domain[0] && v <= domain[1]) result.push(v);
-        }
-      }
-      return result.sort((a, b) => a - b);
-    };
-    return fn;
-  }
-
-  if (scaleType === "equalSize") {
-    // Build lookups
-    const byId = {};
-    (allUnits || []).forEach(u => { byId[u.id] = u; });
-
-    const byParent = {};
-    (allUnits || []).forEach(u => {
-      const pk = u.parent != null ? u.parent : "__root__";
-      if (!byParent[pk]) byParent[pk] = [];
-      byParent[pk].push(u);
-    });
-
-    // Recursively collect display slots:
-    // - Units at or finer than equalSizeLevel → include as a single slot
-    // - Units coarser than equalSizeLevel → recurse into children
-    // - Coarser units with no children at all → include as a single slot (dead end)
-    function collectSlots(parentKey) {
-      const pk = parentKey != null ? parentKey : "__root__";
-      const children = (byParent[pk] || []).filter(u => u.start !== null);
-      if (children.length === 0) {
-        if (parentKey != null) {
-          const u = byId[parentKey];
-          return (u && u.start !== null) ? [u] : [];
-        }
-        return [];
-      }
-      return children.flatMap(u => {
-        if (u.levelOrder >= equalSizeLevel) return [u];
-        return collectSlots(u.id);
-      });
-    }
-
-    const displayUnits = collectSlots(null)
-      .map(u => ({ ...u, end: u.end === null ? 0 : u.end }))
-      .sort((a, b) => a.start - b.start); // youngest first → range[0] (top)
-
-    if (displayUnits.length === 0) return d3.scaleLinear().domain(domain).range(range);
-
-    const n = displayUnits.length;
-    const rangeSize = Math.abs(range[1] - range[0]);
-    const unitHeight = rangeSize / n;
-
-    const fn = age => {
-      for (let i = 0; i < n; i++) {
-        const u = displayUnits[i];
-        if (age >= u.end && age <= u.start) {
-          const fraction = (age - u.end) / (u.start - u.end);
-          return range[0] + (i + fraction) * unitHeight;
-        }
-      }
-      if (age < displayUnits[n - 1].end) return range[1];
-      return range[0];
-    };
-    fn.invert = pixel => {
-      const relPos = (pixel - range[0]) / (range[1] - range[0]);
-      const unitIndex = Math.min(Math.floor(relPos * n), n - 1);
-      const unitFraction = (relPos * n) - unitIndex;
-      if (unitIndex < 0) return domain[0];
-      if (unitIndex >= n) return domain[1];
-      const u = displayUnits[unitIndex];
-      return u.end + unitFraction * (u.start - u.end);
-    };
-    fn.ticks = () => displayUnits.map(u => u.start).filter(a => a >= domain[0] && a <= domain[1]);
-    return fn;
-  }
-
-  if (scaleType === "eraEqual") {
-    const allEras = [
-      { name: "Cenozoic",     start: 66,       end: 0 },
-      { name: "Mesozoic",     start: 251.902,  end: 66 },
-      { name: "Paleozoic",    start: 538.8,    end: 251.902 },
-      { name: "Precambrian",  start: 4567.30,  end: 538.8 }
-    ];
-
-    const eras = allEras;
-
-    const rangeSize = Math.abs(range[1] - range[0]);
-    const eraHeight = rangeSize / eras.length;
-
-    const fn = age => {
-      for (let i = 0; i < eras.length; i++) {
-        const era = eras[i];
-        if (age >= era.end && age <= era.start) {
-          const fraction = (age - era.end) / (era.start - era.end);
-          return range[0] + (i + fraction) * eraHeight;
-        }
-      }
-      if (age < eras[0].end) return range[0];
-      return range[1];
-    };
-    fn.invert = pixel => {
-      const relPos = (pixel - range[0]) / (range[1] - range[0]);
-      const eraIndex = Math.min(Math.floor(relPos * eras.length), eras.length - 1);
-      const eraFraction = (relPos * eras.length) - eraIndex;
-      if (eraIndex < 0) return domain[0];
-      const era = eras[eraIndex];
-      return era.end + eraFraction * (era.start - era.end);
-    };
-    fn.ticks = (count = 40) => {
-      const result = new Set();
-      const perEra = Math.max(3, Math.floor(count / eras.length));
-      eras.forEach(era => {
-        const lo = Math.max(domain[0], era.end);
-        const hi = Math.min(domain[1], era.start);
-        if (lo >= hi) return;
-        if (era.start >= domain[0] && era.start <= domain[1]) result.add(era.start);
-        if (era.end   >= domain[0] && era.end   <= domain[1]) result.add(era.end);
-        d3.scaleLinear().domain([lo, hi]).ticks(perEra)
-          .forEach(t => { if (t >= domain[0] && t <= domain[1]) result.add(t); });
-      });
-      if (domain[0] <= 0) result.add(0);
-      return [...result].sort((a, b) => a - b);
-    };
-    return fn;
-  }
-
-  return d3.scaleLinear().domain(domain).range(range);
-}
-
 function App() {
   const svgRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -322,6 +152,9 @@ function App() {
   const rafHandleRef = useRef(null);
   const hitBoxesRef = useRef([]); // populated each frame, queried on mousemove
   const [scrollableSize, setScrollableSize] = useState(800);
+  // Tracks scroll container's clientHeight so the sticky canvas wrapper can be
+  // sized to the viewport (not the scrollable spacer, which would stretch the canvas).
+  const [viewportH, setViewportH] = useState(0);
   const [headerHeight, setHeaderHeight] = useState(() => _initPrefs.headerHeight ?? 48);
   const [headerFontSize, setHeaderFontSize] = useState(() => _initPrefs.headerFontSize ?? 13);
   // Top margin tracks header height; bottom margin is fixed so the footer never moves.
@@ -499,21 +332,13 @@ function App() {
       ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
       : allUnits;
 
-    let scale;
-    if (scaleType === "equalSize" || scaleType === "eraEqual") {
-      const fullMin = dynamicMinAge;
-      const fullMax = dynamicMaxAge;
-      const visSpan = Math.max(vMax - vMin, 0.001);
-      const fullSpan = Math.max(fullMax - fullMin, 0.001);
-      const viewportH = viewH - eM - BOTTOM_MARGIN;
-      const virtualH = viewportH * (fullSpan / visSpan);
-      const fullScale = buildScale(scaleType, [fullMin, fullMax], [0, virtualH], scaleUnits, equalSizeLevel);
-      const pixelOffset = fullScale(vMin);
-      scale = age => fullScale(age) - pixelOffset + eM;
-      scale.invert = px => fullScale.invert(px - eM + pixelOffset);
-    } else {
-      scale = buildScale(scaleType, [vMin, vMax], [eM, viewH - BOTTOM_MARGIN], scaleUnits, equalSizeLevel);
-    }
+    const { scale } = buildViewScale({
+      scaleType,
+      vMin, vMax,
+      fullMin: dynamicMinAge, fullMax: dynamicMaxAge,
+      eM, viewH: viewH - BOTTOM_MARGIN,
+      units: scaleUnits, equalSizeLevel,
+    });
 
     const svgD3 = d3.select(svgEl);
     const zoomLayer     = svgD3.append("g").attr("transform", `translate(${lateral},0)`);
@@ -858,6 +683,9 @@ function App() {
   }, [zoomMode, visibleDomain, currentTransform, lateralOffset, hiddenUnits]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleScroll(e) {
+    // Dynamic mode drives the scrollbar from visibleDomain (one-way);
+    // writing back from scroll causes drag-release snap-back.
+    if (zoomMode !== "transform") return;
     if (isScrollSyncing.current) return;
     const container = e.currentTarget;
     const svgEl = svgRef.current;
@@ -868,33 +696,35 @@ function App() {
     const scrollRange = scrollableSize - viewH;
     if (scrollRange <= 0) return;
 
-    if (zoomMode === "transform") {
-      const k = transformRef.current.k || 1;
-      const eM = effectiveMarginRef.current;
-      const newTy = eM * (1 - k) - scrollTop * (viewH - 2 * eM) / viewH;
-      const newTransform = d3.zoomIdentity
-        .translate(transformRef.current.x || 0, newTy)
-        .scale(k);
-      isScrollSyncing.current = true;
-      transformRef.current = newTransform;
-      setCurrentTransform(newTransform);
-      d3.select(svgEl).select("g").attr("transform", newTransform);
-      if (zoomBehaviorRef.current) {
-        d3.select(svgEl).call(zoomBehaviorRef.current.transform, newTransform);
-      }
-      isScrollSyncing.current = false;
-    } else {
-      const fullSpan = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
-      const visibleSpan = visibleDomainRef.current[1] - visibleDomainRef.current[0];
-      const fraction = scrollTop / scrollRange;
-      const newMin = dynamicMinAgeRef.current + fraction * (fullSpan - visibleSpan);
-      const newMax = newMin + visibleSpan;
-      isScrollSyncing.current = true;
-      visibleDomainRef.current = [newMin, newMax];
-      setVisibleDomain([newMin, newMax]);
-      isScrollSyncing.current = false;
+    const k = transformRef.current.k || 1;
+    const eM = effectiveMarginRef.current;
+    const newTy = eM * (1 - k) - scrollTop * (viewH - 2 * eM) / viewH;
+    const newTransform = d3.zoomIdentity
+      .translate(transformRef.current.x || 0, newTy)
+      .scale(k);
+    isScrollSyncing.current = true;
+    transformRef.current = newTransform;
+    setCurrentTransform(newTransform);
+    d3.select(svgEl).select("g").attr("transform", newTransform);
+    if (zoomBehaviorRef.current) {
+      d3.select(svgEl).call(zoomBehaviorRef.current.transform, newTransform);
     }
+    isScrollSyncing.current = false;
   }
+
+  // Track scroll container's viewport height. The sticky canvas wrapper must be
+  // sized to this (not to the spacer's scrollableSize height) — otherwise the
+  // canvas CSS height = scrollableSize while its backing store is viewH tall,
+  // and the browser stretches canvas content vertically by scrollableSize/viewH.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const update = () => setViewportH(el.clientHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Compute scrollableSize based on zoom level / visible domain
   useEffect(() => {
@@ -1129,21 +959,13 @@ function App() {
     ];
     const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
 
-    let scale;
-    if (scaleType === "equalSize" || scaleType === "eraEqual") {
-      const fullMin = dynamicMinAgeRef.current;
-      const fullMax = dynamicMaxAgeRef.current;
-      const visSpan = Math.max(vMax - vMin, 0.001);
-      const fullSpan = Math.max(fullMax - fullMin, 0.001);
-      const viewportH = viewH - eM;
-      const virtualH = viewportH * (fullSpan / visSpan);
-      const fullScale = buildScale(scaleType, [fullMin, fullMax], [0, virtualH], allUnits, equalSizeLevel);
-      const pixelOffset = fullScale(vMin);
-      scale = age => fullScale(age) - pixelOffset + eM;
-      scale.invert = px => fullScale.invert(px - eM + pixelOffset);
-    } else {
-      scale = buildScale(scaleType, [vMin, vMax], [eM, viewH], allUnits, equalSizeLevel);
-    }
+    const { scale } = buildViewScale({
+      scaleType,
+      vMin, vMax,
+      fullMin: dynamicMinAgeRef.current, fullMax: dynamicMaxAgeRef.current,
+      eM, viewH,
+      units: allUnits, equalSizeLevel,
+    });
 
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, cssW, viewH);
@@ -2100,23 +1922,6 @@ if (showGSSP && picksColumn) {
       let rafId = null;
       zoomBehaviorRef.current = null;
 
-      // Helper: clamp a new [min, max] to the allowed domain while preserving span
-      function clampDomain(newMin, newMax, span) {
-        const fullSpan = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
-        if (span > fullSpan) {
-          return [dynamicMinAgeRef.current, dynamicMaxAgeRef.current];
-        }
-        if (newMin < dynamicMinAgeRef.current) {
-          newMin = dynamicMinAgeRef.current;
-          newMax = newMin + span;
-        }
-        if (newMax > dynamicMaxAgeRef.current) {
-          newMax = dynamicMaxAgeRef.current;
-          newMin = newMax - span;
-        }
-        return [newMin, newMax];
-      }
-
       function commitDomain(newMin, newMax) {
         if (newMin >= newMax) return;
         visibleDomainRef.current = [newMin, newMax];
@@ -2141,33 +1946,22 @@ if (showGSSP && picksColumn) {
         if (e.ctrlKey) {
           if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 
-          const cursorY = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
-          let focalAge;
-          if (scaleType === "equalSize" || scaleType === "eraEqual") {
-            const fullMin = dynamicMinAgeRef.current;
-            const fullMax = dynamicMaxAgeRef.current;
-            const fullSpan = Math.max(fullMax - fullMin, 0.001);
-            const viewportPx = Math.max(1, h - eM);
-            const virtualH = viewportPx * (fullSpan / Math.max(span, 0.001));
-            const fullScale = buildScale(scaleType, [fullMin, fullMax], [0, virtualH], effectiveUnits, equalSizeLevel);
-            const pixelOffset = fullScale(refMin);
-            focalAge = fullScale.invert(Math.max(eM, Math.min(h, cursorY)) - eM + pixelOffset);
-          } else {
-            const directScale = buildScale(scaleType, [refMin, refMax], [eM, h], effectiveUnits, equalSizeLevel);
-            focalAge = directScale.invert(Math.max(eM, Math.min(h, cursorY)));
-          }
-          const pct = span > 0 ? (focalAge - refMin) / span : 0.5;
-
-          const fullSpan   = dynamicMaxAgeRef.current - dynamicMinAgeRef.current;
+          const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
+          const fullMin  = dynamicMinAgeRef.current;
+          const fullMax  = dynamicMaxAgeRef.current;
+          const fullSpan = fullMax - fullMin;
           const speedScale = Math.pow(span / fullSpan, 0.2);
-          const kFactor    = Math.pow(2, zoomDelta * 0.003 * speedScale);
-          const newSpan    = Math.min(span * kFactor, fullSpan);
+          const zoomFactor = Math.pow(2, zoomDelta * 0.003 * speedScale);
 
-          let newMin = focalAge - pct * newSpan;
-          let newMax = focalAge + (1 - pct) * newSpan;
-
-          if (newMin < dynamicMinAgeRef.current) { newMin = dynamicMinAgeRef.current; newMax = newMin + newSpan; }
-          if (newMax > dynamicMaxAgeRef.current) { newMax = dynamicMaxAgeRef.current; newMin = newMax - newSpan; }
+          const [newMin, newMax] = computeZoomedDomain({
+            scaleType,
+            vMin: refMin, vMax: refMax,
+            fullMin, fullMax,
+            eM, viewH: h,
+            units: effectiveUnits,
+            equalSizeLevel,
+            cursorY, zoomFactor,
+          });
 
           if (newMin < newMax) {
             // Write ref only — rAF loop picks it up next frame. No setState. No re-render.
@@ -2176,7 +1970,10 @@ if (showGSSP && picksColumn) {
         } else {
           const viewportPx = Math.max(1, h - eM);
           const shift = panDelta * (span / viewportPx);
-          const [newMin, newMax] = clampDomain(refMin + shift, refMax + shift, span);
+          const [newMin, newMax] = clampDomain(
+            refMin + shift, refMax + shift,
+            dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+          );
           commitDomain(newMin, newMax);
         }
       };
@@ -2211,7 +2008,10 @@ if (showGSSP && picksColumn) {
         const span = refMax - refMin;
         const viewportPx = Math.max(1, liveH - eM);
         const shift = -dy * (span / viewportPx);
-        const [clampedMin, clampedMax] = clampDomain(refMin + shift, refMax + shift, span);
+        const [clampedMin, clampedMax] = clampDomain(
+          refMin + shift, refMax + shift,
+          dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+        );
         if (clampedMin < clampedMax) {
           visibleDomainRef.current = [clampedMin, clampedMax]; // ref-only: rAF picks it up next frame
         }
@@ -2224,14 +2024,9 @@ if (showGSSP && picksColumn) {
 
       const onMouseUp = () => {
         if (pan) {
-          // Keep isScrollSyncing true through the async scroll event that fires
-          // when setVisibleDomain triggers the scroll-sync effect.
-          // setTimeout(0) clears it after that scroll event has been handled.
           setVisibleDomain([...visibleDomainRef.current]);
-          setTimeout(() => { isScrollSyncing.current = false; }, 0);
-        } else {
-          isScrollSyncing.current = false;
         }
+        isScrollSyncing.current = false;
         pan = null;
         canvasEl.style.cursor = "grab";
       };
@@ -2246,7 +2041,10 @@ if (showGSSP && picksColumn) {
           const span   = vMax - vMin;
           const center = (vMin + vMax) / 2;
           const newSpan = span * (isZoomIn ? 1 / 1.5 : 1.5);
-          const [newMin, newMax] = clampDomain(center - newSpan / 2, center + newSpan / 2, newSpan);
+          const [newMin, newMax] = clampDomain(
+            center - newSpan / 2, center + newSpan / 2,
+            dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+          );
           if (newMin < newMax) { visibleDomainRef.current = [newMin, newMax]; setVisibleDomain([newMin, newMax]); }
           return;
         }
@@ -2562,13 +2360,17 @@ if (showGSSP && picksColumn) {
           minHeight: "100%",
           position: "relative"
         }}>
-          {/* Sticky wrapper keeps SVG + handles pinned to the viewport */}
+          {/* Sticky wrapper keeps SVG + handles pinned to the viewport.
+              Height must equal the scroll container's viewport, NOT 100% of the
+              spacer (which is scrollableSize tall) — otherwise the canvas inside
+              resolves its 100% height to scrollableSize while its backing store
+              is viewH-tall, and the browser stretches content vertically. */}
           <div style={{
             position: "sticky",
             top: 0,
             left: 0,
             width: "100%",
-            height: "100%",
+            height: viewportH || "100%",
             pointerEvents: "none"
           }}>
             {/* Canvas: handles dynamic mode rendering + events */}
