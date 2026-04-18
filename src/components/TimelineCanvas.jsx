@@ -1,0 +1,624 @@
+import { useEffect } from "react";
+import * as d3 from "d3";
+
+import { computeFitAndWrap } from "../renderers/BlockRenderer";
+import {
+  buildViewScale,
+  clampDomain,
+  computeLayout,
+  computeZoomedDomain,
+  formatTickLabel,
+} from "../lib/scale.js";
+import { UNIT_MAP, isUnitVisible } from "../lib/units.js";
+
+const MARGIN = 14;
+
+export default function TimelineCanvas({
+  canvasRef, hitBoxesRef, rafHandleRef,
+  visibleDomainRef, lateralOffsetRef,
+  dynamicMinAgeRef, dynamicMaxAgeRef,
+  effectiveMarginRef, scrollContainerRef, isScrollSyncing,
+  effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths,
+  scaleType, equalSizeLevel,
+  fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules,
+  labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP,
+  zoomMode,
+  setVisibleDomain, setLateralOffset, setHoverUnit, setTooltipPos,
+}) {
+  // ── Canvas rAF loop: drawFrame defined inline so refs aren't treated as reactive deps ──
+  // Dirty-flag pattern: each tick compares current input snapshot to last-drawn snapshot
+  // and skips the draw if nothing changed. Effect re-creation (on dep change) starts with
+  // a fresh closure → last.vMin === null forces a redraw. Saves ~60fps of idle CPU burn.
+  useEffect(() => {
+    const last = { vMin: null, vMax: null, lateral: null, cssW: null, viewH: null };
+
+    const drawFrame = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth;
+      const cssH = canvas.clientHeight;
+      const viewH = scrollContainerRef.current?.clientHeight ?? cssH;
+
+      const [vMin, vMax] = visibleDomainRef.current;
+      const lateral = lateralOffsetRef.current;
+      if (last.vMin === vMin && last.vMax === vMax && last.lateral === lateral &&
+          last.cssW === cssW && last.viewH === viewH) {
+        return; // nothing changed since last draw
+      }
+      last.vMin = vMin; last.vMax = vMax; last.lateral = lateral;
+      last.cssW = cssW; last.viewH = viewH;
+
+      const needsResize = canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(viewH * dpr);
+      if (needsResize) {
+        canvas.width  = Math.round(cssW * dpr);
+        canvas.height = Math.round(viewH * dpr);
+      }
+
+      ctx.restore();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, viewH);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, cssW, viewH);
+      ctx.clip();
+
+      const eM      = effectiveMarginRef.current;
+      const hitBoxes = [];
+
+      const allUnits   = effectiveUnits;
+      const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
+
+      const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
+      const cols = [
+        { id: "time", type: "time" },
+        ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
+        { id: "picks", type: "picks" },
+      ];
+      const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
+
+      const { scale } = buildViewScale({
+        scaleType,
+        vMin, vMax,
+        fullMin: dynamicMinAgeRef.current, fullMax: dynamicMaxAgeRef.current,
+        eM, viewH,
+        units: allUnits, equalSizeLevel,
+      });
+
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, cssW, viewH);
+
+      const contrastColor = (hex) => {
+        if (!hex || hex.length < 7) return "black";
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return luma > 0.65 ? "black" : "white";
+      };
+
+      visLevels.forEach(level => {
+        const colConf = columnConfig.find(c => c.level === level);
+        const levelUnits = allUnits.filter(u =>
+          u.levelOrder === level && u.start !== null && visibleSet.has(u.id)
+        ).map(u => ({ ...u, end: u.end ?? 0 }));
+
+        levelUnits.forEach(unit => {
+          const currentIndex = visLevels.indexOf(level);
+          const unitMap = UNIT_MAP;
+
+          let spanStartIndex = currentIndex;
+          let hasVisibleParent = false;
+          let parentId = unit.parent;
+          while (parentId) {
+            const parent = unitMap[parentId];
+            if (parent && visLevels.includes(parent.levelOrder)) { hasVisibleParent = true; break; }
+            parentId = parent?.parent;
+          }
+          if (!hasVisibleParent) spanStartIndex = 0;
+
+          let spanEndIndex = currentIndex;
+          for (let i = currentIndex + 1; i < visLevels.length; i++) {
+            const nextLevel = visLevels[i];
+            const hasDesc = allUnits.some(u => {
+              if (u.levelOrder !== nextLevel) return false;
+              if (!visibleSet.has(u.id)) return false;
+              let pid = u.parent;
+              while (pid) { if (pid === unit.id) return true; pid = unitMap[pid]?.parent; }
+              return false;
+            });
+            if (hasDesc) { spanEndIndex = i - 1; break; }
+            spanEndIndex = i;
+          }
+
+          const spanColumns = frameLayout.filter(col =>
+            col.id !== "time" && col.id !== "picks" &&
+            visLevels.indexOf(col.id) >= spanStartIndex &&
+            visLevels.indexOf(col.id) <= spanEndIndex
+          );
+          if (spanColumns.length === 0) return;
+
+          const x = spanColumns[0].start + lateral;
+          const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
+          const y1 = scale(unit.start);
+          const y2 = scale(unit.end);
+          const y  = Math.min(y1, y2);
+          const h  = Math.abs(y2 - y1);
+
+          if (y > viewH || y + h < 0) return;
+          hitBoxes.push({ id: unit.id, x, y, w, h });
+
+          ctx.fillStyle = unit.icsColor || "#cccccc";
+          ctx.fillRect(x, y, w, h);
+          ctx.strokeStyle = "rgba(0,0,0,0.4)";
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(x, y, w, h);
+
+          const labelText = (() => {
+            const ts = unit.displayName;
+            const st = unit.displayNameStratigraphic;
+            if (labelMode === "stratigraphic") return st || ts;
+            if (labelMode === "both" && st) return `${ts} / ${st}`;
+            return ts;
+          })();
+          const words = (labelText || "").trim().split(/\s+/).filter(Boolean);
+          if (!words.length) return;
+
+          const matchingRule = fontRules.find(r =>
+            unit.start !== null && unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
+          );
+          const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+
+          const leftmostHierarchyStart = frameLayout.find(col => col.id !== "time" && col.id !== "picks")?.start ?? x;
+          const orientWidth = !hasVisibleParent
+            ? (spanColumns[spanColumns.length - 1].end - leftmostHierarchyStart)
+            : w;
+
+          const blockOrient = colConf?.orientation ?? "auto";
+          const resolvedOrient = blockOrient === "auto"
+            ? (orientWidth >= h ? "horizontal" : "vertical")
+            : blockOrient;
+
+          const [fitW, fitH] = resolvedOrient === "vertical" ? [h, w] : [w, h];
+          const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
+
+          const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, fontFamily, blockFontSize, 5);
+
+          const fontPrefix = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}`;
+          ctx.font = `${fontPrefix}${fitSize}px ${fontFamily}`;
+          ctx.fillStyle = contrastText ? contrastColor(unit.icsColor) : "black";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+
+          const cx = x + w / 2;
+          const cy = y + h / 2;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y, w, h);
+          ctx.clip();
+
+          if (resolvedOrient === "vertical") {
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText(lines[0] || "", 0, 0);
+            ctx.restore();
+          } else {
+            const lineH = fitSize * 1.2;
+            const startY = cy - ((lines.length - 1) / 2) * lineH;
+            lines.forEach((line, i) => {
+              ctx.fillText(line, cx, startY + i * lineH);
+            });
+          }
+
+          ctx.restore();
+        });
+      });
+
+      // ── Time axis ──
+      const timeColumn = frameLayout.find(col => col.id === "time");
+      if (timeColumn) {
+        ctx.fillStyle = "white";
+        ctx.fillRect(timeColumn.start + lateral, eM, timeColumn.width, viewH - eM);
+
+        const tickValues = d3.scaleLinear().domain([vMin, vMax]).ticks(40);
+        if (tickValues.length) {
+          const tickSpan = vMax - vMin;
+          const tickStep = tickValues.length > 1
+            ? Math.abs(tickValues[1] - tickValues[0])
+            : Math.max(0.001, tickSpan / 20);
+
+          const targetLabels = Math.max(4, Math.floor((viewH - eM) / (fontSize * 2.5)));
+          const majorEvery   = Math.max(1, Math.round(tickValues.length / targetLabels));
+          const majorTicks   = tickValues.filter((_, i) => i % majorEvery === 0);
+
+          const minorTicks = [];
+          for (let i = 0; i < majorTicks.length - 1; i++) {
+            const a = majorTicks[i], b = majorTicks[i + 1];
+            const step = (b - a) / 5;
+            for (let j = 1; j < 5; j++) {
+              const age = a + j * step;
+              if (age >= vMin && age <= vMax) minorTicks.push(age);
+            }
+          }
+
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 0.7;
+          minorTicks.forEach(age => {
+            const pos = scale(age);
+            if (pos < eM - 2 || pos > viewH + 2) return;
+            const tx = timeColumn.end + lateral;
+            ctx.beginPath();
+            ctx.moveTo(tx - 5, pos);
+            ctx.lineTo(tx, pos);
+            ctx.stroke();
+          });
+
+          ctx.font = `${fontSize}px ${fontFamily}`;
+          ctx.fillStyle = "black";
+          ctx.textAlign = "right";
+          ctx.textBaseline = "middle";
+          let lastLabelY = -Infinity;
+          ctx.lineWidth = 1;
+          majorTicks.forEach(age => {
+            const pos = scale(age);
+            if (pos < eM - 2 || pos > viewH + 2) return;
+            const tx = timeColumn.end + lateral;
+            ctx.strokeStyle = "black";
+            ctx.beginPath();
+            ctx.moveTo(tx - 12, pos);
+            ctx.lineTo(tx, pos);
+            ctx.stroke();
+            if (pos - lastLabelY >= fontSize * 1.2) {
+              lastLabelY = pos;
+              ctx.fillText(formatTickLabel(age, tickStep, timeUnit), tx - 16, pos);
+            }
+          });
+        }
+      }
+
+      // ── Picks column ──
+      const picksColumn = frameLayout.find(col => col.id === "picks");
+      if (picksColumn && visLevels.length) {
+        let boundaryAges = [];
+
+        let adaptivePicksLevel = null;
+        if (picksMode === "adaptive") {
+          const minPxGap = fontSize * 1.6;
+          const levelsFineFirst = [...visLevels].sort((a, b) => b - a);
+          for (const level of levelsFineFirst) {
+            const positions = allUnits
+              .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+              .filter(u => u.start >= vMin && u.start <= vMax)
+              .map(u => scale(u.start))
+              .filter(p => isFinite(p))
+              .sort((a, b) => a - b);
+            if (positions.length === 0) continue;
+            if (positions.length === 1) { adaptivePicksLevel = level; break; }
+            let minGap = Infinity;
+            for (let i = 1; i < positions.length; i++) minGap = Math.min(minGap, positions[i] - positions[i - 1]);
+            if (minGap >= minPxGap) { adaptivePicksLevel = level; break; }
+          }
+          if (adaptivePicksLevel === null) adaptivePicksLevel = [...visLevels].sort((a, b) => a - b)[0];
+        }
+
+        let candidateLevels;
+        if (picksMode === "auto") {
+          candidateLevels = [...visLevels];
+        } else if (picksMode === "adaptive") {
+          candidateLevels = adaptivePicksLevel !== null ? [adaptivePicksLevel] : [visLevels[0]];
+        } else if (picksMode === "manual" && manualPicksLevel !== null) {
+          candidateLevels = visLevels.filter(lvl => lvl <= manualPicksLevel);
+        } else {
+          candidateLevels = [];
+        }
+
+        if (candidateLevels.length) {
+          const sortedLevels = [...candidateLevels].sort((a, b) => b - a);
+          const boundaryMap = new Map();
+          sortedLevels.forEach(level => {
+            allUnits
+              .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+              .forEach(unit => {
+                if (!boundaryMap.has(unit.start)) {
+                  boundaryMap.set(unit.start, {
+                    uncertainty: unit.startUncertainty ?? null,
+                    approximate: unit.startApproximate ?? false,
+                  });
+                }
+              });
+          });
+          boundaryMap.forEach(({ uncertainty, approximate }, age) => {
+            boundaryAges.push({ age, uncertainty, approximate });
+          });
+        }
+
+        if (!boundaryAges.some(b => b.age === 0)) {
+          boundaryAges.push({ age: 0, uncertainty: null, approximate: false });
+        }
+        const _seen = new Set();
+        boundaryAges = boundaryAges
+          .filter(b => { if (_seen.has(b.age)) return false; _seen.add(b.age); return true; })
+          .sort((a, b) => a.age - b.age);
+
+        const formatAge = (age) => {
+          if (age === 0) return "0";
+          const magnitude = Math.floor(Math.log10(Math.abs(age)) + 1e-10);
+          const decimals = Math.max(0, picksSigFigs - 1 - magnitude);
+          return String(parseFloat(age.toFixed(decimals)));
+        };
+
+        ctx.font = `${fontSize}px ${fontFamily}`;
+        ctx.fillStyle = "black";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+
+        boundaryAges.forEach(({ age, uncertainty, approximate }) => {
+          const pos = scale(age);
+          if (pos < eM - 2 || pos > viewH + 2) return;
+
+          const approxText = (showUncertainty && approximate) ? "\u007E" : "";
+          const ageText = formatAge(age);
+          const uncText = (showUncertainty && uncertainty !== null) ? ` \u00B1${uncertainty}` : "";
+          const labelStr = approxText + ageText + uncText;
+
+          const rightMargin = 4;
+          const tickLabelGap = 12;
+          const textWidth = ctx.measureText(labelStr).width;
+          const labelPadding = textWidth + tickLabelGap + rightMargin;
+
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 1;
+          const px = picksColumn.start + lateral;
+          const pe = picksColumn.end + lateral;
+          ctx.beginPath();
+          ctx.moveTo(px, pos);
+          ctx.lineTo(pe - labelPadding, pos);
+          ctx.stroke();
+
+          ctx.fillText(labelStr, pe - rightMargin, pos);
+        });
+      }
+
+      // ── GSSP / GSSA markers ──
+      if (showGSSP && picksColumn) {
+        const markerX = picksColumn.end + lateral + 4;
+        ctx.font = `8px ${fontFamily}`;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+
+        ctx.fillStyle = "#DAA520";
+        allUnits
+          .filter(u => u.ratifiedGSSP === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+          .forEach(unit => {
+            const pos = scale(unit.start);
+            if (pos < eM - 2 || pos > viewH + 2) return;
+            ctx.fillText("\u25B6", markerX, pos);
+          });
+
+        ctx.fillStyle = "#4169E1";
+        allUnits
+          .filter(u => u.ratifiedGSSA === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
+          .forEach(unit => {
+            const pos = scale(unit.start);
+            if (pos < eM - 2 || pos > viewH + 2) return;
+            ctx.fillText("\u23F1", markerX + 12, pos);
+          });
+      }
+
+      ctx.restore();
+      hitBoxesRef.current = hitBoxes;
+    };
+
+    let raf;
+    const tick = () => {
+      drawFrame();
+      raf = requestAnimationFrame(tick);
+      rafHandleRef.current = raf;
+    };
+    raf = requestAnimationFrame(tick);
+    rafHandleRef.current = raf;
+    return () => cancelAnimationFrame(raf);
+  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel, fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules, labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Dynamic-mode event wiring: wheel zoom/pan, click-drag pan, keyboard
+  useEffect(() => {
+    if (zoomMode !== "dynamic") return;
+    const canvasEl = canvasRef.current;
+    if (!canvasEl) return;
+
+    let rafId = null;
+
+    function commitDomain(newMin, newMax) {
+      if (newMin >= newMax) return;
+      visibleDomainRef.current = [newMin, newMax];
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        setVisibleDomain([...visibleDomainRef.current]);
+        rafId = null;
+      });
+    }
+
+    const onWheel = (e) => {
+      e.preventDefault();
+
+      const eM   = effectiveMarginRef.current;
+      const h    = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
+      const [refMin, refMax] = visibleDomainRef.current;
+      const span = refMax - refMin;
+
+      const panDelta  = e.deltaY * (e.deltaMode === 1 ? 100 : e.deltaMode === 2 ? 300 : 4);
+      const zoomDelta = e.deltaY * (e.deltaMode === 1 ?  30 : e.deltaMode === 2 ? 300 : 1);
+
+      if (e.ctrlKey) {
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+
+        const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
+        const fullMin  = dynamicMinAgeRef.current;
+        const fullMax  = dynamicMaxAgeRef.current;
+        const fullSpan = fullMax - fullMin;
+        const speedScale = Math.pow(span / fullSpan, 0.2);
+        const zoomFactor = Math.pow(2, zoomDelta * 0.003 * speedScale);
+
+        const [newMin, newMax] = computeZoomedDomain({
+          scaleType,
+          vMin: refMin, vMax: refMax,
+          fullMin, fullMax,
+          eM, viewH: h,
+          units: effectiveUnits,
+          equalSizeLevel,
+          cursorY, zoomFactor,
+        });
+
+        if (newMin < newMax) {
+          visibleDomainRef.current = [newMin, newMax];
+        }
+      } else {
+        const viewportPx = Math.max(1, h - eM);
+        const shift = panDelta * (span / viewportPx);
+        const [newMin, newMax] = clampDomain(
+          refMin + shift, refMax + shift,
+          dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+        );
+        commitDomain(newMin, newMax);
+      }
+    };
+
+    canvasEl.addEventListener("wheel", onWheel, { passive: false });
+
+    let pan = null;
+
+    const onMouseDown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      pan = {
+        startX: e.clientX,
+        startY: e.clientY,
+        domain: [...visibleDomainRef.current],
+        lateral: lateralOffsetRef.current
+      };
+      isScrollSyncing.current = true;
+      canvasEl.style.cursor = "grabbing";
+    };
+
+    const onMouseMove = (e) => {
+      if (!pan) return;
+      const dx = e.clientX - pan.startX;
+      const dy = e.clientY - pan.startY;
+
+      const [refMin, refMax] = pan.domain;
+      const eM = effectiveMarginRef.current;
+      const liveH = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
+      const span = refMax - refMin;
+      const viewportPx = Math.max(1, liveH - eM);
+      const shift = -dy * (span / viewportPx);
+      const [clampedMin, clampedMax] = clampDomain(
+        refMin + shift, refMax + shift,
+        dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+      );
+      if (clampedMin < clampedMax) {
+        visibleDomainRef.current = [clampedMin, clampedMax];
+      }
+
+      const newLateral = pan.lateral + dx;
+      lateralOffsetRef.current = newLateral;
+      setLateralOffset(newLateral);
+    };
+
+    const onMouseUp = () => {
+      if (pan) {
+        setVisibleDomain([...visibleDomainRef.current]);
+      }
+      isScrollSyncing.current = false;
+      pan = null;
+      canvasEl.style.cursor = "grab";
+    };
+
+    const onKeyDown = (event) => {
+      if (event.ctrlKey) {
+        const isZoomIn  = event.key === "+" || event.key === "=";
+        const isZoomOut = event.key === "-";
+        if (!isZoomIn && !isZoomOut) return;
+        event.preventDefault();
+        const [vMin, vMax] = visibleDomainRef.current;
+        const span   = vMax - vMin;
+        const center = (vMin + vMax) / 2;
+        const newSpan = span * (isZoomIn ? 1 / 1.5 : 1.5);
+        const [newMin, newMax] = clampDomain(
+          center - newSpan / 2, center + newSpan / 2,
+          dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+        );
+        if (newMin < newMax) { visibleDomainRef.current = [newMin, newMax]; setVisibleDomain([newMin, newMax]); }
+        return;
+      }
+      const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+      if (!arrows.includes(event.key)) return;
+      event.preventDefault();
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        const [vMin, vMax] = visibleDomainRef.current;
+        const span = vMax - vMin;
+        const shift = span * 0.1 * (event.key === "ArrowUp" ? -1 : 1);
+        let newMin = vMin + shift;
+        let newMax = vMax + shift;
+        if (newMin < dynamicMinAgeRef.current) { newMin = dynamicMinAgeRef.current; newMax = newMin + span; }
+        if (newMax > dynamicMaxAgeRef.current) { newMax = dynamicMaxAgeRef.current; newMin = Math.max(dynamicMinAgeRef.current, newMax - span); }
+        visibleDomainRef.current = [newMin, newMax];
+        setVisibleDomain([newMin, newMax]);
+      } else {
+        const delta = canvasEl.clientWidth * 0.1 * (event.key === "ArrowLeft" ? 1 : -1);
+        lateralOffsetRef.current += delta;
+        setLateralOffset(lateralOffsetRef.current);
+      }
+    };
+
+    canvasEl.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      canvasEl.removeEventListener("wheel", onWheel);
+      canvasEl.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [zoomMode, scaleType, equalSizeLevel, effectiveUnits]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: "100%",
+        cursor: "grab",
+        pointerEvents: zoomMode === "dynamic" ? "auto" : "none",
+        display: "block",
+      }}
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const hit = hitBoxesRef.current.find(
+          b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h
+        );
+        if (hit) {
+          const unit = effectiveUnits.find(u => u.id === hit.id);
+          if (unit) {
+            setHoverUnit(unit);
+            setTooltipPos({ x: e.clientX, y: e.clientY });
+            return;
+          }
+        }
+        setHoverUnit(null);
+      }}
+      onMouseLeave={() => setHoverUnit(null)}
+    />
+  );
+}

@@ -3,30 +3,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 
 import { renderBlocks, computeFitAndWrap } from "./renderers/BlockRenderer";
-import geologicTime from "./data/geologicTime.json";
 import {
   buildScale,
   buildViewScale,
-  clampDomain,
   computeLayout,
-  computeZoomedDomain,
   formatTickLabel,
 } from "./lib/scale.js";
+import { ALL_UNITS, UNIT_MAP, isUnitVisible } from "./lib/units.js";
+import TimelineCanvas from "./components/TimelineCanvas.jsx";
 
 const ICS_MIN_AGE = 0;
 const ICS_MAX_AGE = 4567.30;
 const MARGIN = 14;       // px of blank space above/below the timeline inside the SVG
-
-// ===== Static unit data (adjusted levels, built once) =====
-const ALL_UNITS = geologicTime.units.map(u => {
-  let adjustedLevel = u.levelOrder;
-  if (u.rankTime === "Sub-Period") adjustedLevel = 4;
-  if (u.rankTime === "Epoch")      adjustedLevel = 5;
-  if (u.rankTime === "Subepoch")   adjustedLevel = 5.5;
-  if (u.rankTime === "Age")        adjustedLevel = 6;
-  return { ...u, levelOrder: adjustedLevel };
-});
-const UNIT_MAP = Object.fromEntries(ALL_UNITS.map(u => [u.id, u]));
 
 const _initPrefs = (() => {
   try { return JSON.parse(localStorage.getItem("gt_prefs")) || {}; } catch { return {}; }
@@ -42,17 +30,6 @@ const _initFromHash = (() => {
     return JSON.parse(atob(h));
   } catch { return null; }
 })();
-
-// Returns true if unit (by id) is not hidden by hiddenUnits or any ancestor
-function isUnitVisible(unitId, hiddenUnits) {
-  if (hiddenUnits.has(unitId)) return false;
-  let pid = UNIT_MAP[unitId]?.parent;
-  while (pid) {
-    if (hiddenUnits.has(pid)) return false;
-    pid = UNIT_MAP[pid]?.parent;
-  }
-  return true;
-}
 
 /**
  * Render (or re-render) time-axis ticks into `layer` (a bare SVG g element).
@@ -227,20 +204,27 @@ function App() {
   const [editingValue, setEditingValue] = useState("");
   const [editorWidth, setEditorWidth] = useState(820);
 
-  // Apply any user edits on top of the base unit data
-  const effectiveUnits = ALL_UNITS.map(u => ({
+  // Apply any user edits on top of the base unit data.
+  // Memoized: rebuilding this on every render reallocates 100+ objects and
+  // busts downstream referential equality (drawFrame deps, picks filter, etc).
+  const effectiveUnits = useMemo(() => ALL_UNITS.map(u => ({
     ...u,
     ...(unitEdits[u.id] || {})
-  }));
+  })), [unitEdits]);
 
-  // Dynamic time extent — shrinks when units are hidden
-  const visibleForDomain = effectiveUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits));
-  const dynamicMaxAge = visibleForDomain.length > 0
-    ? Math.max(...visibleForDomain.map(u => u.start))
-    : ICS_MAX_AGE;
-  const dynamicMinAge = visibleForDomain.length > 0
-    ? Math.min(...visibleForDomain.map(u => u.end ?? 0))
-    : ICS_MIN_AGE;
+  // Dynamic time extent — shrinks when units are hidden.
+  // Memoized: reduces over ~100 units on every keystroke otherwise.
+  const { dynamicMinAge, dynamicMaxAge } = useMemo(() => {
+    const visible = effectiveUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits));
+    if (visible.length === 0) return { dynamicMinAge: ICS_MIN_AGE, dynamicMaxAge: ICS_MAX_AGE };
+    let minAge = Infinity, maxAge = -Infinity;
+    for (const u of visible) {
+      if (u.start > maxAge) maxAge = u.start;
+      const end = u.end ?? 0;
+      if (end < minAge) minAge = end;
+    }
+    return { dynamicMinAge: minAge, dynamicMaxAge: maxAge };
+  }, [effectiveUnits, hiddenUnits]);
 
   // Refs so zoom/pan closures always see the latest dynamic bounds
   const dynamicMinAgeRef = useRef(ICS_MIN_AGE);
@@ -497,7 +481,7 @@ function App() {
 
       if (boundaryAges.length) {
         renderPicks({ svg: picksLayer.node(), column: picksColumn, boundaryAges, scale,
-          height: viewH, margin: BOTTOM_MARGIN, showUncertainty, picksSigFigs, fontSize });
+          showUncertainty, picksSigFigs, fontSize });
       }
     }
 
@@ -680,7 +664,7 @@ function App() {
       };
       window.history.replaceState(null, "", "#" + btoa(JSON.stringify(payload)));
     }, 300);
-  }, [zoomMode, visibleDomain, currentTransform, lateralOffset, hiddenUnits]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [zoomMode, visibleDomain, currentTransform, lateralOffset, hiddenUnits]);
 
   function handleScroll(e) {
     // Dynamic mode drives the scrollbar from visibleDomain (one-way);
@@ -860,30 +844,25 @@ function App() {
       const base = parseFloat(this.getAttribute("data-base-stroke") || "0.5");
       this.setAttribute("stroke-width", base / k);
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const [hoverUnit, setHoverUnit] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  const visibleLevels = columnConfig
-    .filter(col => col.visible)
-    .map(col => col.level)
-    .sort((a, b) => a - b);
+  const visibleLevels = useMemo(
+    () => columnConfig.filter(col => col.visible).map(col => col.level).sort((a, b) => a - b),
+    [columnConfig],
+  );
 
-  const hierarchyColumns = visibleLevels.map(level => ({
-    id: level,
-    type: "hierarchy",
-    level
-  }));
+  const columns = useMemo(() => [
+    { id: "time", type: "time" },
+    ...visibleLevels.map(level => ({ id: level, type: "hierarchy", level })),
+    { id: "picks", type: "picks" },
+  ], [visibleLevels]);
 
-  const columns = [
-  { id: "time", type: "time" },
-  ...hierarchyColumns,
-  { id: "picks", type: "picks" }
-];
-
-  // Auto-expand picks column so labels never clip into adjacent columns
-  const _picksMinWidth = (() => {
+  // Auto-expand picks column so labels never clip into adjacent columns.
+  // Memoized: creates a canvas + measures text each run, only re-compute when inputs change.
+  const _picksMinWidth = useMemo(() => {
     const mc = document.createElement("canvas");
     const mctx = mc.getContext("2d");
     mctx.font = `${fontSize}px ${fontFamily}`;
@@ -903,418 +882,17 @@ function App() {
     }
     // rightMargin(4) + tickLabelGap(12) + leftTick(16)
     return Math.ceil(maxW) + 32;
-  })();
-  const effectiveColumnWidths = {
+  }, [fontSize, fontFamily, picksSigFigs, dynamicMaxAge, dynamicMinAge, showUncertainty]);
+  const effectiveColumnWidths = useMemo(() => ({
     ...columnWidths,
     picks: Math.max(columnWidths.picks ?? 60, _picksMinWidth),
-  };
+  }), [columnWidths, _picksMinWidth]);
 
-  const layout = computeLayout(columns, effectiveColumnWidths, MARGIN);
+  const layout = useMemo(
+    () => computeLayout(columns, effectiveColumnWidths, MARGIN),
+    [columns, effectiveColumnWidths],
+  );
 
-  // ── Canvas draw function (Phase 2: rectangles + text) ──
-  // Must be declared after effectiveColumnWidths and layout are initialized.
-  const drawFrame = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const cssW = canvas.clientWidth;
-    const cssH = canvas.clientHeight;
-    // Use the scroll container's client height as the actual viewport height.
-    // canvas.clientHeight reflects the full scrollable extent (e.g. 5000px when zoomed),
-    // but only the viewport portion is ever visible.
-    const viewH = scrollContainerRef.current?.clientHeight ?? cssH;
-
-    // Resize canvas backing store if needed (handles window resize)
-    const needsResize = canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(viewH * dpr);
-    if (needsResize) {
-      canvas.width  = Math.round(cssW * dpr);
-      canvas.height = Math.round(viewH * dpr);
-    }
-
-    // Reset context completely each frame: clear transform stack, re-apply DPR scale,
-    // then set a clip region so nothing renders outside the visible viewport.
-    // ctx.restore() on an empty stack is a no-op in all browsers.
-    ctx.restore();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cssW, viewH);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, cssW, viewH);
-    ctx.clip();
-
-    const eM      = effectiveMarginRef.current;
-    const [vMin, vMax] = visibleDomainRef.current;
-    const lateral = lateralOffsetRef.current;
-    const hitBoxes = []; // reset each frame; queried on mousemove for tooltip
-
-    const allUnits   = effectiveUnits;
-    const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
-
-    const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
-    const cols = [
-      { id: "time", type: "time" },
-      ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
-      { id: "picks", type: "picks" },
-    ];
-    const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
-
-    const { scale } = buildViewScale({
-      scaleType,
-      vMin, vMax,
-      fullMin: dynamicMinAgeRef.current, fullMax: dynamicMaxAgeRef.current,
-      eM, viewH,
-      units: allUnits, equalSizeLevel,
-    });
-
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, cssW, viewH);
-
-    // NTSC luma contrast — same formula as BlockRenderer.js
-    const contrastColor = (hex) => {
-      if (!hex || hex.length < 7) return "black";
-      const r = parseInt(hex.slice(1, 3), 16);
-      const g = parseInt(hex.slice(3, 5), 16);
-      const b = parseInt(hex.slice(5, 7), 16);
-      const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-      return luma > 0.65 ? "black" : "white";
-    };
-
-    visLevels.forEach(level => {
-      const colConf = columnConfig.find(c => c.level === level);
-      const levelUnits = allUnits.filter(u =>
-        u.levelOrder === level && u.start !== null && visibleSet.has(u.id)
-      ).map(u => ({ ...u, end: u.end ?? 0 }));
-
-      levelUnits.forEach(unit => {
-        const currentIndex = visLevels.indexOf(level);
-        const unitMap = UNIT_MAP;
-
-        let spanStartIndex = currentIndex;
-        let hasVisibleParent = false;
-        let parentId = unit.parent;
-        while (parentId) {
-          const parent = unitMap[parentId];
-          if (parent && visLevels.includes(parent.levelOrder)) { hasVisibleParent = true; break; }
-          parentId = parent?.parent;
-        }
-        if (!hasVisibleParent) spanStartIndex = 0;
-
-        let spanEndIndex = currentIndex;
-        for (let i = currentIndex + 1; i < visLevels.length; i++) {
-          const nextLevel = visLevels[i];
-          const hasDesc = allUnits.some(u => {
-            if (u.levelOrder !== nextLevel) return false;
-            if (!visibleSet.has(u.id)) return false;
-            let pid = u.parent;
-            while (pid) { if (pid === unit.id) return true; pid = unitMap[pid]?.parent; }
-            return false;
-          });
-          if (hasDesc) { spanEndIndex = i - 1; break; }
-          spanEndIndex = i;
-        }
-
-        const spanColumns = frameLayout.filter(col =>
-          col.id !== "time" && col.id !== "picks" &&
-          visLevels.indexOf(col.id) >= spanStartIndex &&
-          visLevels.indexOf(col.id) <= spanEndIndex
-        );
-        if (spanColumns.length === 0) return;
-
-        const x = spanColumns[0].start + lateral;
-        const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
-        const y1 = scale(unit.start);
-        const y2 = scale(unit.end);
-        const y  = Math.min(y1, y2);
-        const h  = Math.abs(y2 - y1);
-
-        if (y > viewH || y + h < 0) return;
-        hitBoxes.push({ id: unit.id, x, y, w, h });
-
-        // ── Rectangle ──
-        ctx.fillStyle = unit.icsColor || "#cccccc";
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = "rgba(0,0,0,0.4)";
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(x, y, w, h);
-
-        // ── Label ──
-        const labelText = (() => {
-          const ts = unit.displayName;
-          const st = unit.displayNameStratigraphic;
-          if (labelMode === "stratigraphic") return st || ts;
-          if (labelMode === "both" && st) return `${ts} / ${st}`;
-          return ts;
-        })();
-        const words = (labelText || "").trim().split(/\s+/).filter(Boolean);
-        if (!words.length) return;
-
-        // Per-column font size, with font rules taking highest priority
-        const matchingRule = fontRules.find(r =>
-          unit.start !== null && unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
-        );
-        const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
-
-        // orientWidth: for units without a visible parent (e.g. Phanerozoic),
-        // use the full width from leftmost hierarchy column — same logic as SVG pipeline.
-        const leftmostHierarchyStart = frameLayout.find(col => col.id !== "time" && col.id !== "picks")?.start ?? x;
-        const orientWidth = !hasVisibleParent
-          ? (spanColumns[spanColumns.length - 1].end - leftmostHierarchyStart)
-          : w;
-
-        // In canvas there's no matrix transform — dimensions are already in CSS pixels.
-        const blockOrient = colConf?.orientation ?? "auto";
-        const resolvedOrient = blockOrient === "auto"
-          ? (orientWidth >= h ? "horizontal" : "vertical")
-          : blockOrient;
-
-        const [fitW, fitH] = resolvedOrient === "vertical" ? [h, w] : [w, h];
-        const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
-
-        const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, fontFamily, blockFontSize, 5);
-
-        const fontPrefix = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}`;
-        ctx.font = `${fontPrefix}${fitSize}px ${fontFamily}`;
-        ctx.fillStyle = contrastText ? contrastColor(unit.icsColor) : "black";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-
-        const cx = x + w / 2;
-        const cy = y + h / 2;
-
-        // Clip to block bounds so labels never bleed into adjacent cells
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(x, y, w, h);
-        ctx.clip();
-
-        if (resolvedOrient === "vertical") {
-          ctx.save();
-          ctx.translate(cx, cy);
-          ctx.rotate(-Math.PI / 2);
-          ctx.fillText(lines[0] || "", 0, 0);
-          ctx.restore();
-        } else {
-          const lineH = fitSize * 1.2;
-          const startY = cy - ((lines.length - 1) / 2) * lineH;
-          lines.forEach((line, i) => {
-            ctx.fillText(line, cx, startY + i * lineH);
-          });
-        }
-
-        ctx.restore(); // end clip
-      });
-    });
-
-    // ── Time axis ──
-    const timeColumn = frameLayout.find(col => col.id === "time");
-    if (timeColumn) {
-      // White background for time column
-      ctx.fillStyle = "white";
-      ctx.fillRect(timeColumn.start + lateral, eM, timeColumn.width, viewH - eM);
-
-      const tickValues = d3.scaleLinear().domain([vMin, vMax]).ticks(40);
-      if (tickValues.length) {
-        const tickSpan = vMax - vMin;
-        const tickStep = tickValues.length > 1
-          ? Math.abs(tickValues[1] - tickValues[0])
-          : Math.max(0.001, tickSpan / 20);
-
-        const targetLabels = Math.max(4, Math.floor((viewH - eM) / (fontSize * 2.5)));
-        const majorEvery   = Math.max(1, Math.round(tickValues.length / targetLabels));
-        const majorTicks   = tickValues.filter((_, i) => i % majorEvery === 0);
-
-        // Minor ticks — 4 subdivisions between each pair of majors
-        const minorTicks = [];
-        for (let i = 0; i < majorTicks.length - 1; i++) {
-          const a = majorTicks[i], b = majorTicks[i + 1];
-          const step = (b - a) / 5;
-          for (let j = 1; j < 5; j++) {
-            const age = a + j * step;
-            if (age >= vMin && age <= vMax) minorTicks.push(age);
-          }
-        }
-
-        ctx.strokeStyle = "black";
-        ctx.lineWidth = 0.7;
-        minorTicks.forEach(age => {
-          const pos = scale(age);
-          if (pos < eM - 2 || pos > viewH + 2) return;
-          const tx = timeColumn.end + lateral;
-          ctx.beginPath();
-          ctx.moveTo(tx - 5, pos);
-          ctx.lineTo(tx, pos);
-          ctx.stroke();
-        });
-
-        ctx.font = `${fontSize}px ${fontFamily}`;
-        ctx.fillStyle = "black";
-        ctx.textAlign = "right";
-        ctx.textBaseline = "middle";
-        let lastLabelY = -Infinity;
-        ctx.lineWidth = 1;
-        majorTicks.forEach(age => {
-          const pos = scale(age);
-          if (pos < eM - 2 || pos > viewH + 2) return;
-          const tx = timeColumn.end + lateral;
-          ctx.strokeStyle = "black";
-          ctx.beginPath();
-          ctx.moveTo(tx - 12, pos);
-          ctx.lineTo(tx, pos);
-          ctx.stroke();
-          if (pos - lastLabelY >= fontSize * 1.2) {
-            lastLabelY = pos;
-            ctx.fillText(formatTickLabel(age, tickStep, timeUnit), tx - 16, pos);
-          }
-        });
-      }
-    }
-
-    // ── Picks column ──
-    const picksColumn = frameLayout.find(col => col.id === "picks");
-    if (picksColumn && visLevels.length) {
-      // Compute boundary ages (same logic as SVG pipeline, simplified for dynamic mode)
-      let boundaryAges = [];
-
-      let adaptivePicksLevel = null;
-      if (picksMode === "adaptive") {
-        const minPxGap = fontSize * 1.6;
-        const levelsFineFirst = [...visLevels].sort((a, b) => b - a);
-        for (const level of levelsFineFirst) {
-          const positions = allUnits
-            .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
-            .filter(u => u.start >= vMin && u.start <= vMax)
-            .map(u => scale(u.start))
-            .filter(p => isFinite(p))
-            .sort((a, b) => a - b);
-          if (positions.length === 0) continue;
-          if (positions.length === 1) { adaptivePicksLevel = level; break; }
-          let minGap = Infinity;
-          for (let i = 1; i < positions.length; i++) minGap = Math.min(minGap, positions[i] - positions[i - 1]);
-          if (minGap >= minPxGap) { adaptivePicksLevel = level; break; }
-        }
-        if (adaptivePicksLevel === null) adaptivePicksLevel = [...visLevels].sort((a, b) => a - b)[0];
-      }
-
-      let candidateLevels;
-      if (picksMode === "auto") {
-        candidateLevels = [...visLevels];
-      } else if (picksMode === "adaptive") {
-        candidateLevels = adaptivePicksLevel !== null ? [adaptivePicksLevel] : [visLevels[0]];
-      } else if (picksMode === "manual" && manualPicksLevel !== null) {
-        candidateLevels = visLevels.filter(lvl => lvl <= manualPicksLevel);
-      } else {
-        candidateLevels = [];
-      }
-
-      if (candidateLevels.length) {
-        const sortedLevels = [...candidateLevels].sort((a, b) => b - a);
-        const boundaryMap = new Map();
-        sortedLevels.forEach(level => {
-          allUnits
-            .filter(u => u.levelOrder === level && u.start !== null && isUnitVisible(u.id, hiddenUnits))
-            .forEach(unit => {
-              if (!boundaryMap.has(unit.start)) {
-                boundaryMap.set(unit.start, {
-                  uncertainty: unit.startUncertainty ?? null,
-                  approximate: unit.startApproximate ?? false,
-                });
-              }
-            });
-        });
-        boundaryMap.forEach(({ uncertainty, approximate }, age) => {
-          boundaryAges.push({ age, uncertainty, approximate });
-        });
-      }
-
-      if (!boundaryAges.some(b => b.age === 0)) {
-        boundaryAges.push({ age: 0, uncertainty: null, approximate: false });
-      }
-      const _seen = new Set();
-      boundaryAges = boundaryAges
-        .filter(b => { if (_seen.has(b.age)) return false; _seen.add(b.age); return true; })
-        .sort((a, b) => a.age - b.age); // youngest first
-
-      // formatAge inline (same as PicksRenderer.js)
-      const formatAge = (age) => {
-        if (age === 0) return "0";
-        const magnitude = Math.floor(Math.log10(Math.abs(age)) + 1e-10);
-        const decimals = Math.max(0, picksSigFigs - 1 - magnitude);
-        return String(parseFloat(age.toFixed(decimals)));
-      };
-
-      ctx.font = `${fontSize}px ${fontFamily}`;
-      ctx.fillStyle = "black";
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-
-      boundaryAges.forEach(({ age, uncertainty, approximate }) => {
-        const pos = scale(age);
-        if (pos < eM - 2 || pos > viewH + 2) return;
-
-        const approxText = (showUncertainty && approximate) ? "\u007E" : "";
-        const ageText = formatAge(age);
-        const uncText = (showUncertainty && uncertainty !== null) ? ` \u00B1${uncertainty}` : "";
-        const labelStr = approxText + ageText + uncText;
-
-        const rightMargin = 4;
-        const tickLabelGap = 12;
-        const textWidth = ctx.measureText(labelStr).width;
-        const labelPadding = textWidth + tickLabelGap + rightMargin;
-
-        ctx.strokeStyle = "black";
-        ctx.lineWidth = 1;
-        const px = picksColumn.start + lateral;
-        const pe = picksColumn.end + lateral;
-        ctx.beginPath();
-        ctx.moveTo(px, pos);
-        ctx.lineTo(pe - labelPadding, pos);
-        ctx.stroke();
-
-        ctx.fillText(labelStr, pe - rightMargin, pos);
-      });
-    }
-
-    // ── GSSP / GSSA markers ──
-    if (showGSSP && picksColumn) {
-      const markerX = picksColumn.end + lateral + 4;
-      ctx.font = `8px ${fontFamily}`;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-
-      // GSSP — gold triangle pointing right
-      ctx.fillStyle = "#DAA520";
-      allUnits
-        .filter(u => u.ratifiedGSSP === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
-        .forEach(unit => {
-          const pos = scale(unit.start);
-          if (pos < eM - 2 || pos > viewH + 2) return;
-          ctx.fillText("▶", markerX, pos);
-        });
-
-      // GSSA — blue clock symbol
-      ctx.fillStyle = "#4169E1";
-      allUnits
-        .filter(u => u.ratifiedGSSA === true && u.start !== null && isUnitVisible(u.id, hiddenUnits))
-        .forEach(unit => {
-          const pos = scale(unit.start);
-          if (pos < eM - 2 || pos > viewH + 2) return;
-          ctx.fillText("⏱", markerX + 12, pos);
-        });
-    }
-
-    ctx.restore(); // remove clip region
-    hitBoxesRef.current = hitBoxes;
-    rafHandleRef.current = requestAnimationFrame(drawFrame);
-  }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel, fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules, labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Start the canvas rAF loop; restart when drawFrame identity changes
-  useEffect(() => {
-    rafHandleRef.current = requestAnimationFrame(drawFrame);
-    return () => {
-      if (rafHandleRef.current) cancelAnimationFrame(rafHandleRef.current);
-    };
-  }, [drawFrame]);
 
   function autoFitColumnWidth(col) {
     const PAD = 16;
@@ -1748,8 +1326,6 @@ if (picksColumn && boundaryAges.length) {
     column: picksColumn,
     boundaryAges,
     scale,
-    height,
-    margin: MARGIN,
     showUncertainty,
     picksSigFigs,
     fontSize,
@@ -1796,7 +1372,7 @@ if (showGSSP && picksColumn) {
     });
 }
 
-  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits, headerHeight]);
+  }, [columnConfig, columnWidths, picksMode, manualPicksLevel, zoomMode, visibleDomain, timeUnit, lateralOffset, showUncertainty, picksSigFigs, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, hiddenUnits, dynamicMinAge, dynamicMaxAge, unitEdits, headerHeight, effectiveUnits, layout, visibleLevels]);
 
   // Re-apply counter-scale after the render effect rebuilds the SVG (transform mode only).
   // MUST be declared after the render effect so React runs it second.
@@ -1838,6 +1414,7 @@ if (showGSSP && picksColumn) {
   useEffect(() => {
     const svgElement = svgRef.current;
     if (!svgElement) return;
+    if (zoomMode !== "transform") return;
     const svg = d3.select(svgElement);
     const svgWidth = svgElement.clientWidth;
     const svgHeight = svgElement.clientHeight;
@@ -1845,245 +1422,75 @@ if (showGSSP && picksColumn) {
     const onContextMenu = (e) => e.preventDefault();
     svgElement.addEventListener("contextmenu", onContextMenu);
 
-    if (zoomMode === "transform") {
-      // ===== TRANSFORM MODE: D3 zoom handles pan + wheel =====
-      const zoom = d3.zoom()
-        .scaleExtent([0.1, 1e8])
-        .translateExtent([[-Infinity, -Infinity], [Infinity, Infinity]])
-        .filter(event => {
-          if (event.type === "dblclick") return false;
-          if (event.type === "wheel") return event.ctrlKey;
-          return event.button === 0;
-        })
-        // D3's default wheelDelta multiplies by 10× when ctrlKey is held
-        // (intended for trackpad pinch which sends many tiny events).
-        // Override to remove that multiplier so a mouse Ctrl+scroll is sane.
-        .wheelDelta(event =>
-          -event.deltaY * (event.deltaMode === 1 ? 0.025 : event.deltaMode ? 0.5 : 0.001)
-        )
-        .on("zoom", (event) => {
-          transformRef.current = event.transform;
-          svg.select("g").attr("transform", event.transform);
-          setCurrentTransform(event.transform);
-          applyCounterScale(event.transform.k);
-        });
+    // ===== TRANSFORM MODE: D3 zoom handles pan + wheel =====
+    const zoom = d3.zoom()
+      .scaleExtent([0.1, 1e8])
+      .translateExtent([[-Infinity, -Infinity], [Infinity, Infinity]])
+      .filter(event => {
+        if (event.type === "dblclick") return false;
+        if (event.type === "wheel") return event.ctrlKey;
+        return event.button === 0;
+      })
+      // D3's default wheelDelta multiplies by 10× when ctrlKey is held
+      // (intended for trackpad pinch which sends many tiny events).
+      // Override to remove that multiplier so a mouse Ctrl+scroll is sane.
+      .wheelDelta(event =>
+        -event.deltaY * (event.deltaMode === 1 ? 0.025 : event.deltaMode ? 0.5 : 0.001)
+      )
+      .on("zoom", (event) => {
+        transformRef.current = event.transform;
+        svg.select("g").attr("transform", event.transform);
+        setCurrentTransform(event.transform);
+        applyCounterScale(event.transform.k);
+      });
 
-      const onKeyDown = (event) => {
-        if (event.ctrlKey) {
-          const isZoomIn  = event.key === "+" || event.key === "=";
-          const isZoomOut = event.key === "-";
-          if (!isZoomIn && !isZoomOut) return;
-          event.preventDefault();
-          svg.call(zoom.scaleBy, isZoomIn ? 1.5 : 1 / 1.5, [svgWidth / 2, svgHeight / 2]);
-          return;
-        }
-        const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
-        if (!arrows.includes(event.key)) return;
+    const onKeyDown = (event) => {
+      if (event.ctrlKey) {
+        const isZoomIn  = event.key === "+" || event.key === "=";
+        const isZoomOut = event.key === "-";
+        if (!isZoomIn && !isZoomOut) return;
         event.preventDefault();
-        const { k, x: tx, y: ty } = transformRef.current;
-        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-          const delta = (svgHeight * 0.1) * (event.key === "ArrowUp" ? 1 : -1);
-          svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty + delta).scale(k));
-        } else {
-          const delta = (svgWidth * 0.1) * (event.key === "ArrowLeft" ? 1 : -1);
-          svg.call(zoom.transform, d3.zoomIdentity.translate(tx + delta, ty).scale(k));
-        }
-      };
-
-      svgElement.onmousedown = () => { svgElement.style.cursor = "grabbing"; };
-      const onMouseUp = () => { svgElement.style.cursor = "grab"; };
-
-      window.addEventListener("keydown", onKeyDown);
-      window.addEventListener("mouseup", onMouseUp);
-
-      zoomBehaviorRef.current = zoom;
-      svg.call(zoom);
-      svg.call(zoom.transform, transformRef.current);
-
-      // Apply initial counter-scale if already zoomed in
-      const initialK = transformRef.current.k;
-      if (initialK !== 1) {
-        applyCounterScale(initialK);
+        svg.call(zoom.scaleBy, isZoomIn ? 1.5 : 1 / 1.5, [svgWidth / 2, svgHeight / 2]);
+        return;
       }
-
-      return () => {
-        svg.on(".zoom", null);
-        svgElement.removeEventListener("contextmenu", onContextMenu);
-        window.removeEventListener("keydown", onKeyDown);
-        window.removeEventListener("mouseup", onMouseUp);
-        svgElement.onmousedown = null;
-      };
-
-    } else {
-      // ===== DYNAMIC MODE: canvas + rAF loop handles rendering; direct wheel/mouse for pan =====
-      const canvasEl = canvasRef.current;
-      if (!canvasEl) return;
-
-      let rafId = null;
-      zoomBehaviorRef.current = null;
-
-      function commitDomain(newMin, newMax) {
-        if (newMin >= newMax) return;
-        visibleDomainRef.current = [newMin, newMax];
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(() => {
-          setVisibleDomain([...visibleDomainRef.current]);
-          rafId = null;
-        });
+      const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+      if (!arrows.includes(event.key)) return;
+      event.preventDefault();
+      const { k, x: tx, y: ty } = transformRef.current;
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        const delta = (svgHeight * 0.1) * (event.key === "ArrowUp" ? 1 : -1);
+        svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty + delta).scale(k));
+      } else {
+        const delta = (svgWidth * 0.1) * (event.key === "ArrowLeft" ? 1 : -1);
+        svg.call(zoom.transform, d3.zoomIdentity.translate(tx + delta, ty).scale(k));
       }
+    };
 
-      const onWheel = (e) => {
-        e.preventDefault();
+    svgElement.onmousedown = () => { svgElement.style.cursor = "grabbing"; };
+    const onMouseUp = () => { svgElement.style.cursor = "grab"; };
 
-        const eM   = effectiveMarginRef.current;
-        const h    = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
-        const [refMin, refMax] = visibleDomainRef.current;
-        const span = refMax - refMin;
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mouseup", onMouseUp);
 
-        const panDelta  = e.deltaY * (e.deltaMode === 1 ? 100 : e.deltaMode === 2 ? 300 : 4);
-        const zoomDelta = e.deltaY * (e.deltaMode === 1 ?  30 : e.deltaMode === 2 ? 300 : 1);
+    zoomBehaviorRef.current = zoom;
+    svg.call(zoom);
+    svg.call(zoom.transform, transformRef.current);
 
-        if (e.ctrlKey) {
-          if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-
-          const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
-          const fullMin  = dynamicMinAgeRef.current;
-          const fullMax  = dynamicMaxAgeRef.current;
-          const fullSpan = fullMax - fullMin;
-          const speedScale = Math.pow(span / fullSpan, 0.2);
-          const zoomFactor = Math.pow(2, zoomDelta * 0.003 * speedScale);
-
-          const [newMin, newMax] = computeZoomedDomain({
-            scaleType,
-            vMin: refMin, vMax: refMax,
-            fullMin, fullMax,
-            eM, viewH: h,
-            units: effectiveUnits,
-            equalSizeLevel,
-            cursorY, zoomFactor,
-          });
-
-          if (newMin < newMax) {
-            // Write ref only — rAF loop picks it up next frame. No setState. No re-render.
-            visibleDomainRef.current = [newMin, newMax];
-          }
-        } else {
-          const viewportPx = Math.max(1, h - eM);
-          const shift = panDelta * (span / viewportPx);
-          const [newMin, newMax] = clampDomain(
-            refMin + shift, refMax + shift,
-            dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
-          );
-          commitDomain(newMin, newMax);
-        }
-      };
-
-      canvasEl.addEventListener("wheel", onWheel, { passive: false });
-
-      // Pan: track raw mouse displacement from mousedown, apply to frozen start domain
-      let pan = null; // { startX, startY, domain, lateral }
-
-      const onMouseDown = (e) => {
-        if (e.button !== 0) return;
-        e.preventDefault();
-        pan = {
-          startX: e.clientX,
-          startY: e.clientY,
-          domain: [...visibleDomainRef.current],
-          lateral: lateralOffsetRef.current
-        };
-        isScrollSyncing.current = true;
-        canvasEl.style.cursor = "grabbing";
-      };
-
-      const onMouseMove = (e) => {
-        if (!pan) return;
-        const dx = e.clientX - pan.startX;
-        const dy = e.clientY - pan.startY;
-
-        // Axial pan (along the time axis)
-        const [refMin, refMax] = pan.domain;
-        const eM = effectiveMarginRef.current;
-        const liveH = scrollContainerRef.current?.clientHeight ?? canvasEl.clientHeight;
-        const span = refMax - refMin;
-        const viewportPx = Math.max(1, liveH - eM);
-        const shift = -dy * (span / viewportPx);
-        const [clampedMin, clampedMax] = clampDomain(
-          refMin + shift, refMax + shift,
-          dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
-        );
-        if (clampedMin < clampedMax) {
-          visibleDomainRef.current = [clampedMin, clampedMax]; // ref-only: rAF picks it up next frame
-        }
-
-        // Lateral pan (perpendicular to time axis)
-        const newLateral = pan.lateral + dx;
-        lateralOffsetRef.current = newLateral;
-        setLateralOffset(newLateral);
-      };
-
-      const onMouseUp = () => {
-        if (pan) {
-          setVisibleDomain([...visibleDomainRef.current]);
-        }
-        isScrollSyncing.current = false;
-        pan = null;
-        canvasEl.style.cursor = "grab";
-      };
-
-      const onKeyDown = (event) => {
-        if (event.ctrlKey) {
-          const isZoomIn  = event.key === "+" || event.key === "=";
-          const isZoomOut = event.key === "-";
-          if (!isZoomIn && !isZoomOut) return;
-          event.preventDefault();
-          const [vMin, vMax] = visibleDomainRef.current;
-          const span   = vMax - vMin;
-          const center = (vMin + vMax) / 2;
-          const newSpan = span * (isZoomIn ? 1 / 1.5 : 1.5);
-          const [newMin, newMax] = clampDomain(
-            center - newSpan / 2, center + newSpan / 2,
-            dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
-          );
-          if (newMin < newMax) { visibleDomainRef.current = [newMin, newMax]; setVisibleDomain([newMin, newMax]); }
-          return;
-        }
-        const arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
-        if (!arrows.includes(event.key)) return;
-        event.preventDefault();
-        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-          const [vMin, vMax] = visibleDomainRef.current;
-          const span = vMax - vMin;
-          const shift = span * 0.1 * (event.key === "ArrowUp" ? -1 : 1);
-          let newMin = vMin + shift;
-          let newMax = vMax + shift;
-          if (newMin < dynamicMinAgeRef.current) { newMin = dynamicMinAgeRef.current; newMax = newMin + span; }
-          if (newMax > dynamicMaxAgeRef.current) { newMax = dynamicMaxAgeRef.current; newMin = Math.max(dynamicMinAgeRef.current, newMax - span); }
-          visibleDomainRef.current = [newMin, newMax];
-          setVisibleDomain([newMin, newMax]);
-        } else {
-          const delta = svgWidth * 0.1 * (event.key === "ArrowLeft" ? 1 : -1);
-          lateralOffsetRef.current += delta;
-          setLateralOffset(lateralOffsetRef.current);
-        }
-      };
-
-      canvasEl.addEventListener("mousedown", onMouseDown);
-      window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp);
-      window.addEventListener("keydown", onKeyDown);
-
-      return () => {
-        if (rafId) cancelAnimationFrame(rafId);
-        svgElement.removeEventListener("contextmenu", onContextMenu);
-        canvasEl.removeEventListener("wheel", onWheel);
-        canvasEl.removeEventListener("mousedown", onMouseDown);
-        window.removeEventListener("mousemove", onMouseMove);
-        window.removeEventListener("mouseup", onMouseUp);
-        window.removeEventListener("keydown", onKeyDown);
-      };
+    // Apply initial counter-scale if already zoomed in
+    const initialK = transformRef.current.k;
+    if (initialK !== 1) {
+      applyCounterScale(initialK);
     }
-  }, [columnConfig, columnWidths, zoomMode, scaleType, equalSizeLevel]);
+
+    return () => {
+      svg.on(".zoom", null);
+      svgElement.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mouseup", onMouseUp);
+      svgElement.onmousedown = null;
+    };
+
+  }, [columnConfig, columnWidths, zoomMode, scaleType, equalSizeLevel, applyCounterScale]);
 
   // Recursive tree renderer — shows all non-stage units with toggle checkboxes
   function renderUnitTree(parentId, depth) {
@@ -2374,36 +1781,42 @@ if (showGSSP && picksColumn) {
             pointerEvents: "none"
           }}>
             {/* Canvas: handles dynamic mode rendering + events */}
-            <canvas
-              ref={canvasRef}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: "100%",
-                cursor: "grab",
-                pointerEvents: zoomMode === "dynamic" ? "auto" : "none",
-                display: "block",
-              }}
-              onMouseMove={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const mx = e.clientX - rect.left;
-                const my = e.clientY - rect.top;
-                const hit = hitBoxesRef.current.find(
-                  b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h
-                );
-                if (hit) {
-                  const unit = effectiveUnits.find(u => u.id === hit.id);
-                  if (unit) {
-                    setHoverUnit(unit);
-                    setTooltipPos({ x: e.clientX, y: e.clientY });
-                    return;
-                  }
-                }
-                setHoverUnit(null);
-              }}
-              onMouseLeave={() => setHoverUnit(null)}
+            <TimelineCanvas
+              canvasRef={canvasRef}
+              hitBoxesRef={hitBoxesRef}
+              rafHandleRef={rafHandleRef}
+              visibleDomainRef={visibleDomainRef}
+              lateralOffsetRef={lateralOffsetRef}
+              dynamicMinAgeRef={dynamicMinAgeRef}
+              dynamicMaxAgeRef={dynamicMaxAgeRef}
+              effectiveMarginRef={effectiveMarginRef}
+              scrollContainerRef={scrollContainerRef}
+              isScrollSyncing={isScrollSyncing}
+              effectiveUnits={effectiveUnits}
+              hiddenUnits={hiddenUnits}
+              columnConfig={columnConfig}
+              effectiveColumnWidths={effectiveColumnWidths}
+              scaleType={scaleType}
+              equalSizeLevel={equalSizeLevel}
+              fontSize={fontSize}
+              fontFamily={fontFamily}
+              labelOrientation={labelOrientation}
+              contrastText={contrastText}
+              fontBold={fontBold}
+              fontItalic={fontItalic}
+              fontRules={fontRules}
+              labelMode={labelMode}
+              picksMode={picksMode}
+              manualPicksLevel={manualPicksLevel}
+              showUncertainty={showUncertainty}
+              picksSigFigs={picksSigFigs}
+              timeUnit={timeUnit}
+              showGSSP={showGSSP}
+              zoomMode={zoomMode}
+              setVisibleDomain={setVisibleDomain}
+              setLateralOffset={setLateralOffset}
+              setHoverUnit={setHoverUnit}
+              setTooltipPos={setTooltipPos}
             />
             {/* SVG: used for transform mode rendering + events */}
             <svg

@@ -18,8 +18,6 @@ export function renderPicks({
   column,
   boundaryAges,   // [{age, uncertainty, approximate}]
   scale,
-  height,
-  margin = 0,
   showUncertainty = false,
   picksSigFigs = 3,
   fontSize = 10
