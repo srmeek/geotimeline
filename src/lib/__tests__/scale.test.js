@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildScale, buildViewScale, computeZoomedDomain, clampDomain, computeLayout } from "../scale.js";
+import { buildScale, buildViewScale, computeZoomedDomain, clampDomain, computeLayout, deriveEraEqualBands } from "../scale.js";
 
 // Minimal synthetic unit set covering enough structure for equalSize/eraEqual.
 const UNITS = [
@@ -140,5 +140,48 @@ describe("computeLayout", () => {
     expect(L[0]).toMatchObject({ id: "a", start: 5,  end: 15 });
     expect(L[1]).toMatchObject({ id: "b", start: 15, end: 35 });
     expect(L[2]).toMatchObject({ id: "c", start: 35, end: 65 });
+  });
+});
+
+describe("deriveEraEqualBands", () => {
+  const realData = [
+    { id: "Phanerozoic",  rankTime: "Eon", parent: null,           start: 538.8,   end: 0 },
+    { id: "Proterozoic",  rankTime: "Eon", parent: "Precambrian",  start: 2500,    end: 538.8 },
+    { id: "Archean",      rankTime: "Eon", parent: "Precambrian",  start: 4031,    end: 2500 },
+    { id: "Hadean",       rankTime: "Eon", parent: "Precambrian",  start: 4567,    end: 4031 },
+    { id: "Cenozoic",     rankTime: "Era", parent: "Phanerozoic",  start: 66,      end: 0 },
+    { id: "Mesozoic",     rankTime: "Era", parent: "Phanerozoic",  start: 251.902, end: 66 },
+    { id: "Paleozoic",    rankTime: "Era", parent: "Phanerozoic",  start: 538.8,   end: 251.902 },
+  ];
+
+  it("derives 4 bands from real ICS data", () => {
+    const bands = deriveEraEqualBands(realData);
+    expect(bands).toEqual([
+      { start: 66,      end: 0 },
+      { start: 251.902, end: 66 },
+      { start: 538.8,   end: 251.902 },
+      { start: 4567,    end: 538.8 },
+    ]);
+  });
+
+  it("reflects user edits to Cenozoic start age", () => {
+    const edited = realData.map(u => u.id === "Cenozoic" ? { ...u, start: 70, end: 0 } : u);
+    const mesoEdited = edited.map(u => u.id === "Mesozoic" ? { ...u, start: 251.902, end: 70 } : u);
+    const bands = deriveEraEqualBands(mesoEdited);
+    expect(bands[0]).toEqual({ start: 70, end: 0 });
+    expect(bands[1]).toEqual({ start: 251.902, end: 70 });
+  });
+
+  it("falls back to hardcoded bands when data is missing", () => {
+    const bands = deriveEraEqualBands([]);
+    expect(bands).toHaveLength(4);
+    expect(bands[3].start).toBeCloseTo(4567.30, 2);
+  });
+
+  it("falls back when no Phanerozoic eras are present", () => {
+    const noEras = realData.filter(u => u.rankTime !== "Era");
+    const bands = deriveEraEqualBands(noEras);
+    expect(bands).toHaveLength(4);
+    expect(bands[0]).toEqual({ start: 66, end: 0 }); // fallback
   });
 });

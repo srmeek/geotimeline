@@ -17,6 +17,38 @@ export function formatTickLabel(age, tickStep, timeUnit) {
   return age.toFixed(decimals) + " Ma";
 }
 
+// Hardcoded fallback — used when unit data is missing or incomplete.
+// Matches ICS 2024/12 Phanerozoic era boundaries + Hadean oldest bound.
+const ERA_EQUAL_FALLBACK = [
+  { start: 66,       end: 0 },
+  { start: 251.902,  end: 66 },
+  { start: 538.8,    end: 251.902 },
+  { start: 4567.30,  end: 538.8 },
+];
+
+// Derive the 4 eraEqual bands from unit data: 3 Phanerozoic Eras + Precambrian.
+// Precambrian spans from the oldest Phanerozoic Era's start back to the oldest Eon's start.
+export function deriveEraEqualBands(allUnits) {
+  if (!allUnits || allUnits.length === 0) return ERA_EQUAL_FALLBACK;
+
+  const phanerozoicEras = allUnits
+    .filter(u => u.rankTime === "Era" && u.parent === "Phanerozoic" && u.start != null && u.end != null)
+    .sort((a, b) => a.start - b.start); // youngest first
+
+  if (phanerozoicEras.length === 0) return ERA_EQUAL_FALLBACK;
+
+  const oldestPhanerozoicStart = phanerozoicEras[phanerozoicEras.length - 1].start;
+  const preEons = allUnits.filter(u => u.rankTime === "Eon" && u.id !== "Phanerozoic" && u.start != null);
+  const precambrianStart = preEons.length > 0
+    ? Math.max(...preEons.map(u => u.start))
+    : ERA_EQUAL_FALLBACK[3].start;
+
+  return [
+    ...phanerozoicEras.map(e => ({ start: e.start, end: e.end })),
+    { start: precambrianStart, end: oldestPhanerozoicStart },
+  ];
+}
+
 export function computeLayout(columns, columnWidths, initialOffset = 0) {
   let offset = initialOffset;
   return columns.map(col => {
@@ -117,13 +149,10 @@ export function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
   }
 
   if (scaleType === "eraEqual") {
-    const allEras = [
-      { name: "Cenozoic",     start: 66,       end: 0 },
-      { name: "Mesozoic",     start: 251.902,  end: 66 },
-      { name: "Paleozoic",    start: 538.8,    end: 251.902 },
-      { name: "Precambrian",  start: 4567.30,  end: 538.8 }
-    ];
-    const eras = allEras;
+    // Derive the 4 equal-height bands from current unit data so editing
+    // Phanerozoic era start dates (or the oldest Eon) re-layouts correctly.
+    // Structure: 3 Phanerozoic Eras + 1 catch-all "Precambrian" band.
+    const eras = deriveEraEqualBands(allUnits);
     const rangeSize = Math.abs(range[1] - range[0]);
     const eraHeight = rangeSize / eras.length;
 
