@@ -1,21 +1,28 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-17 (session 6)*
+*Last Updated: 2026-04-17 (session 7)*
 
 ------------------------------------------------------------------------
 
 # Current State Summary
 
 Full rendering pipeline stable in canvas (dynamic) mode. ICS 2024/12 data
-(189 units). Dynamic zoom mode default. Canvas migration is complete through
-Phase 5. All rendering, export, and interaction features now work in dynamic
-mode. SVG/transform mode is preserved as a fallback.
+(189 units). Dynamic zoom mode default. Canvas migration complete, plus the
+session-7 refactor sequence (component extraction → dirty-flag rAF →
+memoization → lint cleanup → eraEqual boundary fix).
 
-Session 6 refactored zoom math into a unit-tested pure-function library
-(`src/lib/scale.js`, 17 vitest cases) and fixed three correctness bugs plus
-a canvas-stretch-on-pan layout bug. Next up: extract `TimelineCanvas`
-component (Phase 3), then dirty-flag rAF (Phase 4), then memoization pass
-(Phase 5).
+Session 7 extracted `TimelineCanvas` (~624 lines) from App.jsx (now 2480
+lines, down from ~3045), added a closure-scoped dirty-flag so `drawFrame`
+skips redraws when nothing changed, memoized `effectiveUnits`,
+`dynamicMin/MaxAge`, `_picksMinWidth`, `effectiveColumnWidths`,
+`visibleLevels`, `columns`, and `layout`, cleaned the lint baseline to
+**0 errors / 0 warnings**, and fixed known issue #6 (eraEqual boundaries
+now derive from current unit data via `deriveEraEqualBands`, with a
+hardcoded fallback and 4 new vitest cases — 21 total).
+
+**Nothing in session 7 has been browser-verified** — all changes were
+made remotely. See the "Pending browser verification" section below for
+the checklist.
 
 ------------------------------------------------------------------------
 
@@ -23,19 +30,23 @@ component (Phase 3), then dirty-flag rAF (Phase 4), then memoization pass
 
 ## Rendering Pipeline
 
--   **Dynamic mode (default)**: `requestAnimationFrame` loop calls `drawFrame`
-    (a `useCallback`) every frame. Reads all state from refs — no React
-    re-render during gestures.
--   **Transform mode (fallback)**: Single `useEffect` owns all SVG construction
-    (clear → rebuild). Second `useEffect` owns zoom/pan event binding, tears
-    down cleanly. Third `useEffect` re-applies counter-scale after each render.
+-   **Dynamic mode (default)**: lives in `src/components/TimelineCanvas.jsx`
+    (session 7 extraction). `requestAnimationFrame` loop calls an inline
+    `drawFrame` closure every frame. Reads all state from refs and props —
+    no React re-render during gestures. `TimelineCanvas` is a passive
+    component; all state still lives in `App.jsx` and is passed down.
+-   **Transform mode (fallback)**: Single `useEffect` in `App.jsx` owns all
+    SVG construction (clear → rebuild). Second `useEffect` owns zoom/pan
+    event binding, tears down cleanly. Third `useEffect` re-applies
+    counter-scale after each render.
 -   Two more `useEffect`s manage scrollbar ↔ zoom state sync.
 -   Two more `useEffect`s persist preferences to `localStorage`.
 -   **`src/lib/scale.js`** — pure-function math library:
     `buildScale`, `buildViewScale`, `computeZoomedDomain`, `clampDomain`,
-    `computeLayout`, `formatTickLabel`. No React/DOM deps. 17 vitest cases
-    in `src/lib/__tests__/scale.test.js` cover round-trip invariants,
-    focal-point-under-cursor invariant, clamp edge cases, and layout geometry.
+    `computeLayout`, `deriveEraEqualBands`, `formatTickLabel`. No React/DOM
+    deps. 21 vitest cases in `src/lib/__tests__/scale.test.js` cover
+    round-trip invariants, focal-point-under-cursor invariant, clamp edge
+    cases, layout geometry, and eraEqual band derivation (including fallback).
 -   `buildViewScale` is the single source of truth for the "view scale" used
     by both `drawFrame` and `buildSVGForExport` — guarantees live/export parity.
 -   `computeZoomedDomain` performs focal-point zoom anchoring in **g-space**
@@ -48,7 +59,15 @@ component (Phase 3), then dirty-flag rAF (Phase 4), then memoization pass
 
 ## Canvas drawFrame Architecture
 
--   `drawFrame` is a `useCallback` that schedules itself via `requestAnimationFrame`.
+-   `drawFrame` is an inline closure inside a `useEffect` in `TimelineCanvas.jsx`
+    (session 7). **Not** a `useCallback` — React Compiler would flag ref-typed
+    props as potentially-reactive and force `preserve-manual-memoization` to
+    break the memo. A sibling `tick()` closure in the same effect handles
+    rAF self-scheduling.
+-   **Dirty-flag skip**: `drawFrame` keeps a closure-scoped
+    `last = { vMin, vMax, lateral, cssW, viewH }` snapshot. If nothing has
+    changed since the previous frame, the draw is skipped. Effect
+    re-creation on any prop change resets `last` → forces a redraw.
 -   Reads refs directly: `visibleDomainRef`, `effectiveMarginRef`,
     `lateralOffsetRef`, `scrollContainerRef` (for viewport height).
 -   Render order: white background → hierarchy blocks → time axis → picks
@@ -106,12 +125,16 @@ component (Phase 3), then dirty-flag rAF (Phase 4), then memoization pass
 
 ## Data Layer
 
--   `ALL_UNITS` and `UNIT_MAP` are module-level constants (built once).
+-   `ALL_UNITS`, `UNIT_MAP`, `isUnitVisible` live in `src/lib/units.js`
+    (extracted session 7). Module-level constants built once from
+    `geologicTime.json`.
 -   `_initPrefs`, `_initUnitEdits`, `_initFromHash` are module-level IIFEs
-    that parse `localStorage` / URL hash once on load.
--   `effectiveUnits` = `ALL_UNITS` with `unitEdits` overlaid — used everywhere.
+    in `App.jsx` that parse `localStorage` / URL hash once on load.
+-   `effectiveUnits` (in `App.jsx`) = `ALL_UNITS` with `unitEdits` overlaid —
+    memoized via `useMemo([unitEdits])`. Used everywhere.
 -   `isUnitVisible(unitId, hiddenUnits)` walks ancestor chain.
--   `dynamicMinAge` / `dynamicMaxAge` derived from visible units.
+-   `dynamicMinAge` / `dynamicMaxAge` memoized together via `useMemo` over
+    `[effectiveUnits, hiddenUnits]`.
 
 ## Header / Margin Architecture
 
@@ -382,10 +405,48 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
     now asymmetric. Minor inconsistency in transform mode; not visible in
     practice since dynamic mode is the default.
 
-6.  **eraEqual uses hardcoded era boundaries** — `buildScale` for eraEqual
-    hardcodes the four era start/end ages. Editing a Cenozoic start date
-    in the data editor will not re-layout eraEqual. Low priority; flag
-    next time eraEqual is touched.
+6.  **eraEqual uses hardcoded era boundaries** — RESOLVED (session 7).
+    `buildScale` eraEqual branch now calls `deriveEraEqualBands(allUnits)`
+    which filters `rankTime === "Era" && parent === "Phanerozoic"` from the
+    current unit set and appends a Precambrian band derived from the oldest
+    non-Phanerozoic Eon. Falls back to hardcoded ICS 2024/12 values when
+    the data is missing or malformed. Covered by 4 vitest cases.
+
+------------------------------------------------------------------------
+
+# Pending Browser Verification (session 7)
+
+Everything in session 7 was written remotely and has **not** been browser-
+tested. Before declaring the session done, verify the following:
+
+## Phase 3 — TimelineCanvas extraction
+-   Dynamic mode renders the timeline at app load (no blank canvas).
+-   Wheel zoom (ctrl+scroll), wheel pan, drag pan, arrow-key pan all work.
+-   Block hover tooltip fires.
+-   Column resize (drag column header right edge) still drives canvas layout.
+-   Lateral drag (drag on canvas without clicking a block) pans columns L/R.
+-   Switch zoom mode between dynamic ↔ transform — no crash, state converts.
+-   Export SVG and Export PNG produce the same output as before.
+
+## Phase 4 — Dirty-flag rAF
+-   When idle (no zoom/pan, no prop changes), CPU should drop noticeably
+    (check DevTools Performance tab — long flat idle runs between frames).
+-   First frame after switching tabs/focus redraws correctly (snapshot
+    reset on effect recreation).
+-   Zoom / pan / column resize / font change / data edit all trigger a
+    redraw — nothing gets "stuck" showing a stale frame.
+
+## Phase 5 — Memoizations
+-   No perceptible change in behavior; purely a render-avoidance pass.
+-   React DevTools Profiler should show fewer re-renders of
+    `TimelineCanvas` when unrelated state (e.g. sidebar toggles) changes.
+
+## eraEqual boundary fix
+-   Switch scale type to "Era Equal" — layout should be unchanged from
+    before (fallback path hits identical values).
+-   Open Data Editor, edit a Phanerozoic Era start date (e.g. change
+    Cenozoic start from 66 to 70), re-select Era Equal — the Cenozoic
+    band should now reflect the new boundary.
 
 ------------------------------------------------------------------------
 
@@ -464,6 +525,21 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
     `viewH * dpr` → browser stretches content vertically by factor
     `scrollableSize / viewH`. Size the sticky wrapper to viewport height
     (via ResizeObserver on the scroll container), not 100% of the spacer.
+27. React Compiler treats ref-typed props (e.g. `visibleDomainRef`) as
+    potentially-reactive. Wrapping `drawFrame` in `useCallback` with those
+    props as deps triggers `react-hooks/preserve-manual-memoization`.
+    Workaround: inline `drawFrame` as a closure inside the `useEffect`
+    that owns the rAF loop; a sibling `tick()` closure handles
+    self-scheduling. Do NOT try to hoist `drawFrame` back out.
+28. Dirty-flag rAF: keep a closure-scoped `last` snapshot of
+    `{vMin, vMax, lateral, cssW, viewH}` inside `drawFrame`. If unchanged,
+    `return` early. Effect re-creation on any prop change allocates a
+    fresh `last` → forces the next frame to redraw. Don't promote `last`
+    to a ref — the effect-recreation reset is the whole point.
+29. For fixed-partition scales (eraEqual), derive band boundaries from the
+    current unit data via `deriveEraEqualBands(allUnits)`, with a hardcoded
+    fallback. Users can edit Phanerozoic Era start/end ages in the data
+    editor; hardcoded bands make those edits invisible in the eraEqual view.
 
 ------------------------------------------------------------------------
 
@@ -490,34 +566,51 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Canvas migration complete (Phases 1–5). Session 6 extracted
-zoom math into `src/lib/scale.js` (unit-tested, 17 vitest cases) and fixed
-three correctness bugs + a canvas-stretch layout bug.
+GeoTimeline — Canvas migration complete. Session 7 extracted
+`TimelineCanvas` (~624 lines) from App.jsx (Phase 3), added a dirty-flag
+rAF skip (Phase 4), memoized derived state in App.jsx (Phase 5), cleaned
+the lint baseline to 0 errors / 0 warnings, and fixed known issue #6
+(eraEqual boundaries now derive from current unit data).
 Stack: React 19 + D3 v7 + Vite + Vitest. Geologic timescale visualizer.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).
 Dynamic mode (canvas + rAF loop) is the default and primary rendering path.
 Transform mode (SVG + D3 zoom) is retained as a fallback.
 
+**Session 7 changes are NOT browser-verified** — user was remote. See the
+"Pending Browser Verification" section in PROJECT_STATE.md for the
+checklist. Prompt the user to run through it before starting new work.
+
 See PROJECT_STATE.md for full architecture, feature status, and lessons.
 
 Architecture constraints (never break):
 - Pure math lives in src/lib/scale.js (buildScale, buildViewScale,
-  computeZoomedDomain, clampDomain, computeLayout, formatTickLabel).
-  Tested in src/lib/__tests__/scale.test.js. Pre-commit hook runs npm test.
+  computeZoomedDomain, clampDomain, computeLayout, deriveEraEqualBands,
+  formatTickLabel). Tested in src/lib/__tests__/scale.test.js (21 cases).
+  Pre-commit hook runs npm test.
+- Data constants (`ALL_UNITS`, `UNIT_MAP`, `isUnitVisible`) live in
+  src/lib/units.js, NOT inline in App.jsx.
+- Canvas rendering lives in src/components/TimelineCanvas.jsx. It is a
+  passive component — all state stays in App.jsx and is passed as props.
+- drawFrame is an inline closure inside a useEffect in TimelineCanvas.jsx;
+  NOT a useCallback. React Compiler's `preserve-manual-memoization` flags
+  ref-typed props. A sibling `tick()` closure self-schedules via rAF.
+- drawFrame has a closure-scoped dirty-flag snapshot (last vMin/vMax/
+  lateral/cssW/viewH). Skip redraws when unchanged. Effect re-creation
+  resets the snapshot — don't hoist `last` to a ref.
 - buildScale() is stateless w.r.t. zoom — never filter slots by visible domain.
+- buildScale eraEqual branch MUST use `deriveEraEqualBands(allUnits)`;
+  never re-inline hardcoded era boundaries.
 - buildViewScale() is the single view-scale source for drawFrame AND
   buildSVGForExport — export must not drift from live.
 - computeZoomedDomain() anchors in g-space (unit-interval parametrization)
   — one formula for all scale types. Do NOT reintroduce age-fraction math.
 - buildViewScale virtualH for non-linear scales = viewportH / gSpan,
   NOT viewportH * (fullSpan/visSpan). Age-span is not pixel-span.
-- All React state and refs unchanged — canvas reads from refs in rAF loop.
 - No setState during zoom gestures — visibleDomainRef.current only.
 - No setState during drag pan — ref-only; single flush on mouseUp.
-- Single rAF loop owns all canvas drawing (drawFrame useCallback).
 - effectiveMarginRef.current = headerHeight + 8 (TOP margin only).
 - BOTTOM_MARGIN = 8 still exists but is NOT used in drawFrame scale ranges
-  or culling (removed in session 5). Still used in SVG/export path.
+  or culling. Still used in SVG/export path.
 - viewH = scrollContainerRef.current.clientHeight (NOT canvas.clientHeight).
 - Canvas backing store sized to viewH*dpr (not cssH*dpr).
 - Sticky canvas wrapper height MUST match viewportH (tracked via
@@ -531,8 +624,6 @@ Architecture constraints (never break):
 - hitBoxesRef populated each frame for tooltip hit testing.
 - Export: buildSVGForExport() for SVG, buildCanvasPNGBlob() for PNG.
 
-Next up: Phase 3 (extract TimelineCanvas component), Phase 4 (dirty-flag
-rAF + precompute block geometry), Phase 5 (memoize effectiveUnits,
-_picksMinWidth, _hc, fullScale).
+Lint baseline: 0 errors / 0 warnings. Keep it that way.
 
 ------------------------------------------------------------------------
