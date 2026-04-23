@@ -1,28 +1,131 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-17 (session 7)*
+*Last Updated: 2026-04-23 (session 12)*
 
 ------------------------------------------------------------------------
 
 # Current State Summary
 
-Full rendering pipeline stable in canvas (dynamic) mode. ICS 2024/12 data
-(189 units). Dynamic zoom mode default. Canvas migration complete, plus the
-session-7 refactor sequence (component extraction → dirty-flag rAF →
-memoization → lint cleanup → eraEqual boundary fix).
+Canvas (dynamic) is now the **only** rendering pipeline. ICS 2024/12 data
+(189 units). Single-mode renderer with `makeScale` everywhere. Custom
+scrollbar, initial centering, and zoom-out headroom added in Session 10;
+two blank-screen bugs fixed in Session 11; scrollbar live-update and
+zoom-out headroom wired correctly in Session 12.
 
-Session 7 extracted `TimelineCanvas` (~624 lines) from App.jsx (now 2480
-lines, down from ~3045), added a closure-scoped dirty-flag so `drawFrame`
-skips redraws when nothing changed, memoized `effectiveUnits`,
-`dynamicMin/MaxAge`, `_picksMinWidth`, `effectiveColumnWidths`,
-`visibleLevels`, `columns`, and `layout`, cleaned the lint baseline to
-**0 errors / 0 warnings**, and fixed known issue #6 (eraEqual boundaries
-now derive from current unit data via `deriveEraEqualBands`, with a
-hardcoded fallback and 4 new vitest cases — 21 total).
+**Session 12 — Scrollbar live-update + zoom-out headroom.**
+All changes are in `src/components/TimelineCanvas.jsx` event handlers.
 
-**Nothing in session 7 has been browser-verified** — all changes were
-made remotely. See the "Pending browser verification" section below for
-the checklist.
+- **Bug 1 — Scrollbar thumb stale during gestures**: ctrl+wheel zoom
+  and drag-pan both wrote directly to `visibleDomainRef.current` without
+  calling `setVisibleDomain`. `CustomScrollbar` reads `visibleDomain`
+  from React state (a prop), so its thumb was stale until gesture release
+  (drag) or forever (zoom). Fixed by routing both paths through the
+  existing `commitDomain` helper (rAF-debounced `setVisibleDomain`). The
+  `onMouseUp` handler now also cancels any pending `commitDomain` rAF and
+  flushes synchronously on release, so there is no delayed final frame.
+
+- **Bug 2 — Zoom-out capped at true data extent**: The ctrl+wheel branch
+  passed `dynamicMinAgeRef` / `dynamicMaxAgeRef` as `fullMin`/`fullMax`
+  to `zoomToFocal`, so g-space was parametrized over the true data
+  extent and `gSpan = 1` was reached at exactly that boundary. The
+  `clampMinAgeRef` / `clampMaxAgeRef` refs (10% headroom) were already
+  used for pan clamping but not zoom. Fixed by passing the clamp refs
+  as `fullMin`/`fullMax` to `zoomToFocal` — g-space now spans the padded
+  extent, zoom-out stops at the same boundary as pan, and focal anchoring
+  remains correct. `drawFrame`'s `makeScale` call is unchanged (still
+  uses `dynamicMinAgeRef` for true-extent tick math).
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
+
+**Session 11 — Blank screen bug fixes.**
+Two bugs introduced in Session 10 caused the app to render nothing:
+
+1. **`layout` temporal dead zone (TDZ)**: The mount `useEffect(..., [layout])`
+   was declared at line ~232, but `const layout = useMemo(...)` was at
+   line ~639. React evaluates the dependency array immediately during
+   render — hitting the TDZ and throwing
+   `ReferenceError: Cannot access 'layout' before initialization`.
+   **Fix**: moved the `hasInitializedView` effect to after the `layout`
+   useMemo declaration. Rule: `useEffect`s whose dependency arrays
+   reference a `const` must be declared after that `const`.
+
+2. **`equalSize` out-of-bounds fallback**: `buildScale` for `equalSize`
+   returned `range[0]` (young/top = 0) for ages older than all display
+   units (i.e. `age > displayUnits[n-1].start`). When Session 10's
+   `computeResetView` set `vMax = dynamicMaxAge + 2% span` (slightly
+   beyond `fullMax`), `g(vMax) = 0 = g(vMin)`, so `gSpan ≈ 1e-9`,
+   `virtualH ≈ 10^12`, and all drawing happened at astronomical
+   y-positions — blank canvas. **Fix**: added
+   `if (age > displayUnits[n - 1].start) return range[1]` before
+   the existing fallback in `src/lib/scale.js`. eraEqual was unaffected
+   (its fallback already returned `range[1]` for old ages). Linear was
+   unaffected (D3 extrapolates). Only triggered when
+   `scaleType = "equalSize"` was saved in localStorage and `vMax >
+   fullMax` on the initial view.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
+
+**Session 10 — Custom scrollbar + UX improvements.**
+- `src/components/CustomScrollbar.jsx` — pure React component, ~110 lines.
+  Absolutely positioned on the right edge. Thumb height ∝ visible span /
+  clamp span; drag → `onScroll(newMin, newMax)` → `setVisibleDomain`.
+  Track height tracked via ResizeObserver (no ref reads during render —
+  avoids `react-hooks/refs` errors). Click above/below thumb pages 90% of
+  visible span.
+- Initial centering: `computeResetView` helper computes a padded domain
+  (`dynamicMaxAge + 2% span`) and horizontally-centered `lateralOffset`
+  (based on `scrollContainerRef.current.clientWidth`). Applied once on
+  mount (guarded by `hasInitializedView` ref) and on every reset.
+- Zoom-out headroom: `clampMinAge`/`clampMaxAge` = 10% beyond the data
+  extent. All `clampDomain` calls in TimelineCanvas pan/zoom handlers now
+  use these refs instead of `dynamicMinAgeRef`/`dynamicMaxAgeRef`. The
+  `makeScale`/`zoomToFocal` `fullMin`/`fullMax` remain anchored to the
+  true data extent.
+- Header drag live update: `onMove` handler now updates both
+  `effectiveMarginRef.current` (immediate rAF effect) and
+  `setHeaderHeight` (React re-render) synchronously. The dirty-flag
+  snapshot now includes `eM` so header resizes trigger a frame.
+- Lint: 0 errors / 0 warnings. Tests: 44/44.
+
+**Session 9 — Transform mode removal + scrollbar removal.** Permanently
+deleted the SVG/D3-zoom transform pipeline. Dynamic canvas is the sole
+renderer. Migrated `buildSVGForExport` to `makeScale`. Deleted
+`buildViewScale` and `computeZoomedDomain` from `src/lib/scale.js`'s
+public API (`buildViewScale` survives as an internal helper used by
+`makeScale` and `zoomToFocal`). Removed the native scrollbar entirely
+(`overflow: hidden` on the scroll container) — a custom scrollbar
+replacement comes in Session 10. App.jsx shrank from 2471 → 1592 lines.
+Tests: 44 cases (down from 54 — pruned the 10 cases covering removed
+APIs). Lint: 0 errors / 0 warnings.
+
+What was removed in Session 9:
+- Dual zoom modes (`zoomMode` state, `handleSwitchZoomMode`, toggle UI).
+- D3 zoom binding effect, `zoomBehaviorRef`, `transformRef`,
+  `currentTransform` state.
+- Counter-scale system (`applyCounterScale`, third useEffect, all
+  `data-block-*` attributes from SVG render path).
+- Scroll sync system (`handleScroll`, `isScrollSyncing` ref,
+  `scrollableSize` state, `viewportH` state + ResizeObserver, native
+  scrollbar, sticky wrapper, scrollable spacer).
+- SVG live element (`svgRef`, `<svg>` JSX, `renderSVGtoPNGBlob`).
+- URL hash transform sync (`_hashTransform`, hash debounce ref,
+  `_initFromHash` import). `hiddenUnits` now only restored from
+  `localStorage` via `_initPrefs`, not from the URL hash.
+- `useCallback` import — no longer needed anywhere.
+
+**Session 8 — makeScale unification.** Introduced
+`makeScale({...}) → { toY, toAge }` as the canonical scale interface.
+`toY(age)` maps to a y coordinate in viewport coordinates
+(`[eM, viewH]`); `toAge` is its inverse. Works uniformly for linear,
+log, equalSize, and eraEqual — g-space and virtual-canvas offsets are
+implementation details hidden behind the interface. The coordinate
+contract is authoritative in [src/lib/coordinates.md](src/lib/coordinates.md).
+
+Session 7 extracted `TimelineCanvas` (~624 lines) from App.jsx, added a
+closure-scoped dirty-flag so `drawFrame` skips redraws when nothing
+changed, memoized derived state, cleaned the lint baseline, and fixed
+known issue #6 (eraEqual boundaries derive from current unit data via
+`deriveEraEqualBands`).
 
 ------------------------------------------------------------------------
 
@@ -30,106 +133,91 @@ the checklist.
 
 ## Rendering Pipeline
 
--   **Dynamic mode (default)**: lives in `src/components/TimelineCanvas.jsx`
-    (session 7 extraction). `requestAnimationFrame` loop calls an inline
-    `drawFrame` closure every frame. Reads all state from refs and props —
-    no React re-render during gestures. `TimelineCanvas` is a passive
-    component; all state still lives in `App.jsx` and is passed down.
--   **Transform mode (fallback)**: Single `useEffect` in `App.jsx` owns all
-    SVG construction (clear → rebuild). Second `useEffect` owns zoom/pan
-    event binding, tears down cleanly. Third `useEffect` re-applies
-    counter-scale after each render.
--   Two more `useEffect`s manage scrollbar ↔ zoom state sync.
--   Two more `useEffect`s persist preferences to `localStorage`.
+-   **Canvas (sole renderer)**: lives in
+    `src/components/TimelineCanvas.jsx`. `requestAnimationFrame` loop
+    calls an inline `drawFrame` closure every frame. Reads all state
+    from refs and props — no React re-render during gestures.
+    `TimelineCanvas` is a passive component; all state still lives in
+    `App.jsx` and is passed down.
+-   `App.jsx` no longer owns any SVG/D3 zoom code, no
+    `useEffect`s for scrollbar sync, counter-scale, or D3 zoom binding.
+    Two `useEffect`s remain: persisting `gt_prefs` and `gt_unitEdits`
+    to `localStorage`, plus a hidden-units reset effect.
 -   **`src/lib/scale.js`** — pure-function math library:
-    `buildScale`, `buildViewScale`, `computeZoomedDomain`, `clampDomain`,
-    `computeLayout`, `deriveEraEqualBands`, `formatTickLabel`. No React/DOM
-    deps. 21 vitest cases in `src/lib/__tests__/scale.test.js` cover
-    round-trip invariants, focal-point-under-cursor invariant, clamp edge
-    cases, layout geometry, and eraEqual band derivation (including fallback).
--   `buildViewScale` is the single source of truth for the "view scale" used
-    by both `drawFrame` and `buildSVGForExport` — guarantees live/export parity.
--   `computeZoomedDomain` performs focal-point zoom anchoring in **g-space**
-    (a unit-interval parametrization of each scale type). Pixel fractions are
-    linear in g under `buildViewScale`, so one formula works for all scale types.
+    `makeScale` (canonical interface — returns `{ toY, toAge }` in
+    viewport coords), `zoomToFocal` (cursor-anchored zoom),
+    `buildScale` (still exported for tick generation), `clampDomain`,
+    `computeLayout`, `deriveEraEqualBands`, `formatTickLabel`.
+    `buildViewScale` is an **internal helper** (not exported) used by
+    `makeScale` and `zoomToFocal`. No React/DOM deps. **44 vitest
+    cases** in `src/lib/__tests__/scale.test.js` cover round-trip
+    invariants, clamp edge cases, layout geometry, eraEqual band
+    derivation, the `makeScale` coordinate contract (5 invariants × 4
+    scale types), and `zoomToFocal` zoom invariants (3 × 4).
+-   **`src/lib/coordinates.md`** — authoritative pixel coordinate
+    conventions. All `scale.js` API boundary values are in *viewport
+    coordinates* (`y=eM` at top of drawing area, `y=viewH` at bottom).
+    g-space and virtual-canvas offsets are implementation details hidden
+    behind `makeScale`.
 -   `computeLayout()` accepts `initialOffset` (horizontal pixel offset,
     equals `MARGIN` constant = 14px).
--   Layered SVG groups (transform mode): `backgroundLayer` → `blockLayer`
-    → `picksLayer` → `gsspLayer`.
 
 ## Canvas drawFrame Architecture
 
--   `drawFrame` is an inline closure inside a `useEffect` in `TimelineCanvas.jsx`
-    (session 7). **Not** a `useCallback` — React Compiler would flag ref-typed
+-   `drawFrame` is an inline closure inside a `useEffect` in `TimelineCanvas.jsx`.
+    **Not** a `useCallback` — React Compiler would flag ref-typed
     props as potentially-reactive and force `preserve-manual-memoization` to
     break the memo. A sibling `tick()` closure in the same effect handles
     rAF self-scheduling.
 -   **Dirty-flag skip**: `drawFrame` keeps a closure-scoped
-    `last = { vMin, vMax, lateral, cssW, viewH }` snapshot. If nothing has
-    changed since the previous frame, the draw is skipped. Effect
-    re-creation on any prop change resets `last` → forces a redraw.
+    `last = { vMin, vMax, lateral, cssW, viewH, eM }` snapshot. If nothing
+    has changed since the previous frame, the draw is skipped. The `eM`
+    field was added in Session 10 so header-height changes (which update
+    `effectiveMarginRef.current`) trigger a redraw without re-creating the
+    effect. Effect re-creation on any prop change resets `last` → forces
+    a redraw.
 -   Reads refs directly: `visibleDomainRef`, `effectiveMarginRef`,
     `lateralOffsetRef`, `scrollContainerRef` (for viewport height).
 -   Render order: white background → hierarchy blocks → time axis → picks
     → GSSP/GSSA markers.
 -   Accumulates `hitBoxes = []` per frame; written to `hitBoxesRef.current`
     at frame end for mousemove hit testing.
--   `BOTTOM_MARGIN` has been **removed from all drawFrame scale ranges and
-    culling guards** (still present in SVG/export path). Scale range is now
+-   `BOTTOM_MARGIN` is **removed from drawFrame scale ranges and
+    culling guards** (still present in SVG export). Scale range is
     `[eM, viewH]`. Clip region prevents any overdraw below viewH.
 -   **DPR reset each frame**: `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` is
     called unconditionally after `ctx.restore()`, before drawing. This ensures
     DPR scaling is never dependent on the save/restore stack.
 -   **Clip region**: `ctx.save()` / `ctx.clip()` to `[0, 0, cssW, viewH]`
     wraps each frame. `ctx.restore()` pops it at frame end.
--   **Canvas backing store** sized to `viewH * dpr` (not `cssH * dpr`).
-    `cssH = canvas.clientHeight` resolves to the full scrollable extent;
-    using `viewH` prevents the backing store from growing to thousands of pixels.
+-   **Canvas backing store** sized to `viewH * dpr`. With the scrollbar
+    removed, `cssH = canvas.clientHeight` now equals the scroll
+    container's viewport height — but the code still reads viewH from
+    `scrollContainerRef.current.clientHeight` for clarity and to keep
+    Session 10's custom-scrollbar work decoupled.
 
-## Viewport Height Fix
+## Scroll Container + Custom Scrollbar
 
--   **Bug**: `canvas.clientHeight` returned the full scrollable extent
-    (e.g. 5000px when zoomed) because the canvas is inside a sticky wrapper
-    inside a tall spacer div. Scale was mapping [vMin, vMax] across 5000px
-    but only the top ~800px (the viewport) was visible.
--   **Fix**: `viewH = scrollContainerRef.current?.clientHeight ?? cssH` is
-    used for all drawing. `canvas.clientHeight` (cssH) is kept only for
-    resizing the backing store.
--   **Same fix applied to wheel and pan handlers**: `h` and `liveH` also
-    read from `scrollContainerRef` so focal-age pct, agePerPx, and pan
-    refScale all use viewport pixels, not full canvas pixels.
-
-## Canvas CSS vs Backing-Store Sizing (session 6 fix)
-
--   **Bug**: Sticky wrapper had `height: 100%`, which resolved to the spacer's
-    `scrollableSize` (e.g. 8000px when zoomed 10×). The canvas inside inherited
-    100% of that. But `drawFrame` sized the backing store to `viewH * dpr`
-    (~800 × dpr). Browser stretched the viewH-tall backing store to fill the
-    scrollableSize-tall CSS box → **all canvas content vertically stretched
-    by factor k at any zoom level** (visible most clearly when panning stops).
-    DOM overlays (tooltip, SVG ticks) were unaffected, confirming the stretch
-    is a canvas-CSS/backing mismatch, not a math error.
--   **Fix**: New `viewportH` state, tracked via a `ResizeObserver` on
-    `scrollContainerRef`. Sticky wrapper now uses `height: viewportH || "100%"`
-    so its CSS height equals the scroll container's viewport, matching the
-    backing store. Canvas CSS = viewportH = backing store / dpr → no stretch.
-
-## Counter-Scale (Transform Mode Only)
-
--   `applyCounterScale(k)` is a stable `useCallback(fn, [])` defined in
-    App() scope, closed over `svgRef` only.
--   Block label text elements carry `data-block-w`, `data-block-dw`,
-    `data-block-h`, `data-label`, `data-user-font-size`, `data-font-family`,
-    `data-label-orient` attributes.
--   Not used in dynamic mode — canvas redraws from scratch each frame.
+-   Single flat container (`overflow: hidden`) wraps `TimelineCanvas`
+    and `CustomScrollbar` — no sticky wrapper, no scrollable spacer,
+    no native scrollbar.
+-   `scrollContainerRef` still exists; its `clientHeight` is the
+    authoritative `viewH` source for the canvas math.
+-   `src/components/CustomScrollbar.jsx` — pure React component.
+    Absolutely positioned on the right edge (12px wide, `z-index: 20`).
+    Thumb height ∝ `visSpan / clampSpan`, minimum 20px so it stays
+    grabbable at max zoom. Track height tracked via `ResizeObserver`
+    (state, not a ref read during render). Drag updates
+    `visibleDomainRef.current` synchronously via the `onScroll` callback.
+    Clicking the track above/below the thumb pages 90% of visible span.
+    No wheel handler — wheel events handled by TimelineCanvas already.
 
 ## Data Layer
 
--   `ALL_UNITS`, `UNIT_MAP`, `isUnitVisible` live in `src/lib/units.js`
-    (extracted session 7). Module-level constants built once from
-    `geologicTime.json`.
--   `_initPrefs`, `_initUnitEdits`, `_initFromHash` are module-level IIFEs
-    in `App.jsx` that parse `localStorage` / URL hash once on load.
+-   `ALL_UNITS`, `UNIT_MAP`, `isUnitVisible` live in `src/lib/units.js`.
+    Module-level constants built once from `geologicTime.json`.
+-   `_initPrefs`, `_initUnitEdits` are module-level IIFEs in `App.jsx`
+    that parse `localStorage` once on load.
 -   `effectiveUnits` (in `App.jsx`) = `ALL_UNITS` with `unitEdits` overlaid —
     memoized via `useMemo([unitEdits])`. Used everywhere.
 -   `isUnitVisible(unitId, hiddenUnits)` walks ancestor chain.
@@ -143,34 +231,36 @@ the checklist.
     Updated every render in the component body.
 -   `BOTTOM_MARGIN = 8` — fixed bottom margin constant, independent of
     header height. Declared in the component body alongside effectiveMarginRef.
--   Scale range: `[eM, viewH - BOTTOM_MARGIN]`. Previously used `[eM, viewH - eM]`
+-   Scale range: `[eM, viewH - BOTTOM_MARGIN]` in SVG export;
+    `[eM, viewH]` in canvas drawFrame. Previously used `[eM, viewH - eM]`
     which caused the bottom of the scale to shift when header height changed.
--   All scroll sync closures read `effectiveMarginRef.current` at event time.
 
-## Zoom / Pan Architecture (Dynamic Mode)
+## Zoom / Pan Architecture
 
 -   **Wheel zoom** (`ctrlKey` = true): synchronous — calls
-    `computeZoomedDomain({scaleType, vMin, vMax, fullMin, fullMax, eM, viewH,
+    `zoomToFocal({scaleType, vMin, vMax, fullMin, fullMax, eM, viewH,
     units, equalSizeLevel, cursorY, zoomFactor})` from `lib/scale.js`. Works
     uniformly for linear, log, equalSize, eraEqual (see g-space below).
+    `fullMin/fullMax` remain anchored to true data extent (`dynamicMinAge/
+    dynamicMaxAge`) — not the clamp extent.
 -   **Wheel pan** (`ctrlKey` = false): pure pixel arithmetic —
     `shift = panDelta * (span / viewportPx)` where `viewportPx = h - eM`.
-    Scale-type-invariant; no `buildScale` call.
--   **Drag pan**: ref-only updates during drag (`visibleDomainRef.current` only,
-    no `commitDomain`/`setVisibleDomain`). Single `setVisibleDomain` flush on
-    `mouseUp`.
--   **handleScroll guard**: `if (zoomMode !== "transform") return;` — dynamic
-    mode's scrollbar is one-way indicator only. `visibleDomain` drives scroll
-    position; scroll events never write back. Replaces the old `setTimeout(0)`
-    workaround for `isScrollSyncing` race.
+    Clamped to `[clampMinAge, clampMaxAge]` (10% headroom beyond data).
+-   **Drag pan**: ref-only updates during drag. Clamped to
+    `[clampMinAge, clampMaxAge]`. Single `setVisibleDomain` flush on `mouseUp`.
+-   **Arrow key pan**: clamped to `[clampMinAge, clampMaxAge]`.
+-   **Keyboard zoom** (ctrl+/−): clamped to `[clampMinAge, clampMaxAge]`.
 -   **Progressive zoom speed**: `speedScale = (span/fullSpan)^0.2`.
--   **Focal age — g-space anchoring**: `computeZoomedDomain` builds a unit-
+-   **Focal age — g-space anchoring**: `zoomToFocal` builds a unit-
     interval parametrization `g(age) ∈ [0,1]` via `buildScale(scaleType,
     [fullMin,fullMax], [0,1], ...)`. Pixel fractions are linear in g under
-    `buildViewScale`, so anchoring `newGMin = gFocal - pxFrac · newGSpan`
-    guarantees the focal age stays under the cursor for ANY scale type.
-    Age bounds are recovered via `g.invert`. Replaces the old age-fraction
-    math which drifted for equalSize/eraEqual.
+    the internal `buildViewScale`, so anchoring `newGMin = gFocal -
+    pxFrac · newGSpan` guarantees the focal age stays under the cursor
+    for ANY scale type. Age bounds are recovered via `g.invert`.
+-   **Clamp vs data extent**: `clampMinAgeRef`/`clampMaxAgeRef` = 10%
+    headroom beyond `dynamicMinAge`/`dynamicMaxAge`. All pan/keyboard-zoom
+    `clampDomain` calls use the clamp refs. `makeScale` and `zoomToFocal`
+    always receive the true data extent. Keep them separate.
 
 ## Equal Size / Era Equal Scale Architecture
 
@@ -178,18 +268,14 @@ Fixed-partition scales — all slots (or all 4 eras) are always laid out
 equally across the full virtual height. Zooming is handled by narrowing
 `[vMin, vMax]` and translating the virtual canvas, NOT by filtering slots.
 
--   **`buildViewScale`** (in `lib/scale.js`) is the single source of truth.
-    Both `drawFrame` and `buildSVGForExport` call it — live/export cannot drift.
+-   **`makeScale`** (in `lib/scale.js`) is the only public entry point;
+    it wraps the internal `buildViewScale` helper. Both `drawFrame` and
+    `buildSVGForExport` call `makeScale` — live/export cannot drift.
 -   For equalSize/eraEqual, `buildViewScale` builds `fullScale` over
     `[fullMin, fullMax]` → `[0, virtualH]` where
     **`virtualH = viewportH / gSpan`** and `gSpan = g(vMax) - g(vMin)` via a
     unit-interval parametrization. Then
     `scale = age => fullScale(age) - fullScale(vMin) + eM`.
--   **Prior bug (fixed session 6)**: `virtualH = viewportH · (fullSpan / visSpan)`
-    used **age** span, which is not pixel span for non-linear scales. It
-    over/under-filled the viewport; the error was partly masked by a
-    compensating zoom-math error that also used age-fractions. Using g-span
-    fixes both.
 -   **buildScale itself is stateless w.r.t. zoom** — `domain` param is used
     only for tick filtering, not slot layout.
 
@@ -199,22 +285,19 @@ equally across the full virtual height. Zooming is handled by narrowing
     `{ id, x, y, w, h }` for every visible block.
 -   Canvas `onMouseMove` searches `hitBoxesRef.current` for the hit block,
     sets `hoverUnit` and `tooltipPos` state.
--   Tooltip JSX is shared between dynamic and transform modes.
 
 ## Export Architecture
 
--   **PNG (dynamic mode)**: `buildCanvasPNGBlob(callback)` — creates an
-    offscreen canvas cropped to viewport height, uses `drawImage` with
-    explicit source rect to copy only the rendered area from the tall
-    backing store. CSS pixel resolution output.
--   **PNG (transform mode)**: `renderSVGtoPNGBlob` — SVG → Image → canvas
-    → blob (unchanged).
--   **SVG (dynamic mode)**: `buildSVGForExport()` — constructs a self-contained
+-   **PNG**: `buildCanvasPNGBlob(callback)` — creates an offscreen
+    canvas cropped to viewport height, uses `drawImage` with explicit
+    source rect to copy only the rendered area from the backing store.
+-   **SVG**: `buildSVGForExport()` — constructs a self-contained
     offscreen SVG from current view state. Runs the full pipeline:
     `renderTimeAxisTicks`, `renderBlocks`, `renderPicks`, GSSP/GSSA markers.
-    Uses `visibleDomainRef` / `effectiveMarginRef` / `lateralOffsetRef` /
-    `scrollContainerRef` at call time. Sets explicit `width`/`height` attrs.
--   **SVG (transform mode)**: serializes the live SVG element (unchanged).
+    Uses `makeScale` for the y-mapping (same canonical interface as the
+    canvas). Reads `visibleDomainRef` / `effectiveMarginRef` /
+    `lateralOffsetRef` / `scrollContainerRef` at call time. Sets explicit
+    `width`/`height` attrs.
 
 ------------------------------------------------------------------------
 
@@ -249,7 +332,7 @@ parser run.
 
 # Feature Status
 
-## ✅ Canvas Rendering Pipeline (Dynamic Mode)
+## ✅ Canvas Rendering Pipeline
 
 ### Phase 1 — Foundation
 -   `<canvas>` element with rAF loop, backing store resized to `cssH * dpr`.
@@ -280,32 +363,10 @@ parser run.
     testing and fires shared tooltip JSX.
 
 ### Phase 5 — Export
--   **SVG**: `buildSVGForExport()` constructs offscreen SVG from current
-    view state using full rendering pipeline. Matches canvas output.
+-   **SVG**: `buildSVGForExport()` constructs offscreen SVG using
+    `makeScale` for the y-mapping. Matches canvas output.
 -   **PNG / Copy**: `buildCanvasPNGBlob()` crops backing store to viewport
-    height. No SVG round-trip needed.
-
-## ✅ Dual Zoom Modes
-
-### Dynamic Mode (default)
--   No matrix transform — `visibleDomain` drives `buildScale()` each frame.
--   Wheel zoom (ctrl+scroll) updates domain synchronously.
--   Wheel pan (plain scroll) updates domain via RAF batch.
--   Mouse drag pans axially (time) and laterally (columns).
--   Arrow keys shift domain (up/down) or lateralOffset (left/right).
--   Switching modes converts between representations.
--   Progressive zoom speed: `speedScale = (span/fullSpan)^0.2`.
-
-### Transform Mode
--   D3 zoom applies matrix transform to zoomLayer `<g>`.
--   Counter-scale keeps text and strokes constant screen size.
--   Ctrl+wheel or drag to pan/zoom. Arrow keys pan 10% of viewport.
-
-## ✅ Scroll Sync
-
--   Forward formula: `ty = eM*(1-k) - scrollTop*(viewH-2*eM)/viewH`
--   Reverse formula: `scrollTop = (eM*(1-k) - ty)*viewH/(viewH-2*eM)`
--   `eM = effectiveMarginRef.current = headerHeight + 8` (top margin).
+    height. No SVG round-trip.
 
 ## ✅ Time Scale Types
 
@@ -318,8 +379,8 @@ Linear, Log, Equal Size (visible-only units), Era Equal.
 
 ## ✅ Text Wrapping + Auto-Shrink (`BlockRenderer.js`)
 
--   `computeFitAndWrap` exported from `BlockRenderer.js`; used in both
-    SVG (counter-scale) and canvas (drawFrame) paths.
+-   `computeFitAndWrap` exported from `BlockRenderer.js`; used by
+    `drawFrame` and `buildSVGForExport`.
 -   Labels never hidden — shrink to 5px minimum.
 
 ## ✅ Auto-Orient Text, Per-Column Font Size, Font Rules
@@ -349,23 +410,21 @@ Linear, Log, Equal Size (visible-only units), Era Equal.
 
 ## ✅ Tooltip on Block Hover
 
--   Canvas mode: per-frame hitBoxes → mousemove hit test → shared tooltip JSX.
--   SVG mode: `data-unit-id` on rect/text elements → mousemove → same JSX.
+-   Per-frame hitBoxes → mousemove hit test → tooltip JSX.
 -   Flips left/above near viewport edges (260×90px clearance).
 
 ## ✅ Export Tab
 
--   **Download SVG**: offscreen SVG in dynamic mode; serialized live SVG in
-    transform mode.
--   **Download PNG**: cropped canvas blob in dynamic mode; SVG→canvas in
-    transform mode.
+-   **Download SVG**: `buildSVGForExport()` offscreen SVG.
+-   **Download PNG**: `buildCanvasPNGBlob()` cropped canvas blob.
 -   **Copy PNG to Clipboard**: same routing as Download PNG.
 
 ## ✅ URL Share State
 
 -   Base64 JSON in `window.location.hash`. Debounced `replaceState` (300ms).
--   Encodes: `zoomMode`, `currentTransform`, `visibleDomain`, `lateralOffset`,
-    `hiddenUnits`.
+-   Encodes `visibleDomain` and `lateralOffset` (no `zoomMode` / `currentTransform`
+    after Session 9). `hiddenUnits` is restored only from `localStorage` /
+    `_initPrefs`, not from the hash.
 
 ## ✅ Keyboard Navigation
 
@@ -380,33 +439,52 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 
 ## ✅ Filter Tab, Left Panel, Settings Panel
 
+## ✅ Custom Scrollbar
+
+-   `src/components/CustomScrollbar.jsx` — pure React, no scroll events.
+-   Thumb height proportional to `visSpan / clampSpan` (min 20px).
+-   Drag: pans `visibleDomain` synchronously via `onScroll` callback.
+-   Track click: pages 90% of visible span up or down.
+-   Track height measured via `ResizeObserver` (not ref reads during render).
+
+## ✅ Initial View Centering + Bottom Padding
+
+-   `computeResetView` helper computes padded domain (`+2% span` at
+    bottom) and centered `lateralOffset` based on viewport width.
+-   Applied once on mount (guarded by `hasInitializedView` ref).
+-   Applied on Reset and on hidden-units change.
+
+## ✅ Zoom-out Headroom
+
+-   `clampMinAge` / `clampMaxAge` = ±10% of data span beyond extent.
+-   All pan/keyboard-zoom `clampDomain` calls use these values.
+-   `makeScale` / `zoomToFocal` keep the true data extent as `fullMin/fullMax`.
+
+## ✅ Header Drag Live Update
+
+-   `onMove` handler writes `effectiveMarginRef.current` synchronously
+    (immediate rAF effect) and calls `setHeaderHeight` (React re-render).
+-   Dirty-flag snapshot includes `eM` → each drag event triggers a new frame.
+
 ------------------------------------------------------------------------
 
 # Known Issues
 
-1.  **Drag pan snap on release** — RESOLVED (session 6). Root cause was
-    `handleScroll` writing back into `visibleDomain` in dynamic mode.
-    Fix: early-return in `handleScroll` when `zoomMode !== "transform"`.
-    Scrollbar is now strictly one-way (decorative indicator).
-    `setTimeout(0)` workaround removed.
+1.  **Drag pan snap on release** — RESOLVED (session 6); root cause
+    `handleScroll` itself was REMOVED in session 9 along with the
+    native scrollbar.
 
-2.  **Canvas vertical stretch on pan/zoom** — RESOLVED (session 6). Root
-    cause was sticky wrapper `height: 100%` resolving to spacer's
-    `scrollableSize` while backing store was `viewH * dpr`. Fix: track
-    `viewportH` via ResizeObserver and apply to sticky wrapper height.
+2.  **Canvas vertical stretch on pan/zoom** — RESOLVED (session 6).
+    No longer relevant after session 9 removed the sticky wrapper /
+    scrollable spacer.
 
 3.  **Picks rounding** — epsilon fix applied to `formatAge`; needs browser verify.
 
 4.  **PNG export with external fonts** — canvas rasterization may not embed
     custom web fonts; system fonts (Arial etc.) are safe.
 
-5.  **Scroll sync formula uses symmetric margin** — forward/reverse scroll
-    sync formulas still use `2 * eM` (symmetric), but top/bottom margins are
-    now asymmetric. Minor inconsistency in transform mode; not visible in
-    practice since dynamic mode is the default.
-
-6.  **eraEqual uses hardcoded era boundaries** — RESOLVED (session 7).
-    `buildScale` eraEqual branch now calls `deriveEraEqualBands(allUnits)`
+5.  **eraEqual uses hardcoded era boundaries** — RESOLVED (session 7).
+    `buildScale` eraEqual branch calls `deriveEraEqualBands(allUnits)`
     which filters `rankTime === "Era" && parent === "Phanerozoic"` from the
     current unit set and appends a Precambrian band derived from the oldest
     non-Phanerozoic Eon. Falls back to hardcoded ICS 2024/12 values when
@@ -414,39 +492,53 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 
 ------------------------------------------------------------------------
 
-# Pending Browser Verification (session 7)
+# Pending Browser Verification (sessions 7–11)
 
-Everything in session 7 was written remotely and has **not** been browser-
-tested. Before declaring the session done, verify the following:
-
-## Phase 3 — TimelineCanvas extraction
+## Session 7 — Phase 3 / dirty-flag / memoizations
 -   Dynamic mode renders the timeline at app load (no blank canvas).
 -   Wheel zoom (ctrl+scroll), wheel pan, drag pan, arrow-key pan all work.
 -   Block hover tooltip fires.
 -   Column resize (drag column header right edge) still drives canvas layout.
 -   Lateral drag (drag on canvas without clicking a block) pans columns L/R.
--   Switch zoom mode between dynamic ↔ transform — no crash, state converts.
--   Export SVG and Export PNG produce the same output as before.
+-   Export SVG and Export PNG produce sensible output.
+-   When idle, CPU drops noticeably (dirty-flag skip).
 
-## Phase 4 — Dirty-flag rAF
--   When idle (no zoom/pan, no prop changes), CPU should drop noticeably
-    (check DevTools Performance tab — long flat idle runs between frames).
--   First frame after switching tabs/focus redraws correctly (snapshot
-    reset on effect recreation).
--   Zoom / pan / column resize / font change / data edit all trigger a
-    redraw — nothing gets "stuck" showing a stale frame.
+## Session 7 — eraEqual boundary fix
+-   Switch scale type to "Era Equal" — layout matches the previous
+    fallback values.
+-   Edit a Phanerozoic Era start date in the Data Editor (e.g. Cenozoic
+    66 → 70), reselect Era Equal — band reflects new boundary.
 
-## Phase 5 — Memoizations
--   No perceptible change in behavior; purely a render-avoidance pass.
--   React DevTools Profiler should show fewer re-renders of
-    `TimelineCanvas` when unrelated state (e.g. sidebar toggles) changes.
+## Session 9 — Transform mode removal
+-   App still renders correctly with no JS errors after first load.
+-   Old hash-encoded URLs (with `zoomMode`/`currentTransform`) load
+    without crashing — those keys are ignored, view falls back to defaults.
+-   No native scrollbar visible on the timeline pane (`overflow: hidden`).
+-   Wheel zoom, wheel pan, drag pan, arrow-key pan, ctrl+= zoom all work
+    identically to before.
+-   SVG export and PNG export produce the expected output.
+-   No console errors mentioning removed refs.
 
-## eraEqual boundary fix
--   Switch scale type to "Era Equal" — layout should be unchanged from
-    before (fallback path hits identical values).
--   Open Data Editor, edit a Phanerozoic Era start date (e.g. change
-    Cenozoic start from 66 to 70), re-select Era Equal — the Cenozoic
-    band should now reflect the new boundary.
+## Session 10 + 11 — Custom scrollbar + UX improvements + blank screen fixes
+-   App loads without a blank screen and no console errors (sessions 10 & 11
+    fixed two crash-level bugs; verify with all four scale types in localStorage).
+-   Thumb appears on right edge, sized proportionally to zoom level.
+-   At full zoom-out (full data extent visible), thumb fills the track.
+-   Dragging thumb pans the timeline smoothly in real time.
+-   Clicking above the thumb pages up; clicking below pages down.
+-   After wheel zoom in, thumb shrinks to reflect new visible span.
+-   After canvas drag pan or wheel pan, thumb moves to reflect new position.
+-   No feedback loops, no snap-back on drag release.
+-   On load: columns are centered horizontally in the viewport.
+-   On load: small gap between oldest unit (Hadean) and bottom of viewport.
+-   Reset button re-centers and re-applies the bottom gap.
+-   Hiding a unit triggers a re-center.
+-   Wheel zoom out or pan goes slightly beyond the full data extent (into
+    the 10% headroom), and snaps back cleanly on next gesture.
+-   Dragging the header row's bottom edge resizes continuously.
+-   Canvas top margin moves with the drag frame by frame — no jump on release.
+-   Switch to "Equal" scale type — timeline renders correctly (verifies the
+    equalSize out-of-bounds fix; previously caused blank screen on load).
 
 ------------------------------------------------------------------------
 
@@ -461,94 +553,158 @@ tested. Before declaring the session done, verify the following:
 
 # Architecture Lessons (Carry Forward)
 
-1.  Single render useEffect — never split (transform mode).
-2.  Zoom mode switching must convert state, not reset.
-3.  `isScrollSyncing` ref prevents scroll↔zoom feedback loops.
-4.  `transformRef` / `visibleDomainRef` / `lateralOffsetRef` / `hitBoxesRef`
-    prevent stale closures.
-5.  Counter-scale useEffect declared **after** render useEffect.
-6.  `applyCounterScale` must be a stable reference (useCallback(fn,[])).
-7.  `data-block-*` attributes on text elements decouple render-time layout
-    from zoom-time re-layout (transform mode only).
-8.  Block label text and rect both need `data-unit-id` for SVG tooltip.
-9.  `computeFitAndWrap` is module-level in BlockRenderer.js — shared by
-    both SVG counter-scale and canvas drawFrame.
-10. `effectiveMarginRef` must be read at call time in all closures.
-11. `canvas.clientHeight` returns the full scrollable height (not viewport)
-    when the canvas is inside a sticky wrapper in a tall spacer div. Always
-    read viewport height from `scrollContainerRef.current.clientHeight`.
-12. Separate top and bottom margins: `eM = headerHeight + 8` (top only);
+These remain load-bearing for the canvas-only renderer:
+
+1.  `effectiveMarginRef` must be read at call time in all closures.
+2.  `canvas.clientHeight` could return the full scrollable height when
+    the canvas was inside a sticky wrapper in a tall spacer (now
+    removed). Always read viewport height from
+    `scrollContainerRef.current.clientHeight` — keeps the math
+    independent of any future scroll-container restructure.
+3.  Separate top and bottom margins: `eM = headerHeight + 8` (top only);
     `BOTTOM_MARGIN = 8` (fixed). Using `eM` for both causes footer drift
     when header height changes.
-13. For zoom focal age on equalSize/eraEqual, use the virtual-canvas invert
-    (`fullScale.invert(cursorY - eM + pixelOffset)`). Do NOT use
-    `buildScale([vMin,vMax],...).invert()` — that domain is wrong for fixed
-    partition scales.
-14. Zoom must be synchronous (no RAF) so consecutive wheel events each
+4.  Zoom must be synchronous (no RAF) so consecutive wheel events each
     read the correct updated domain.
-15. Pan and zoom wheel deltas must be separated (pan uses 4× amplification).
-16. `data-block-w` = orientWidth; `data-block-dw` = drawn width.
-17. Canvas PNG export: use `drawImage` with explicit source rect to crop
-    the tall backing store to viewport height. `toBlob()` on the full
-    canvas would export 5000px of mostly-empty pixels.
-18. SVG export from canvas state: `buildSVGForExport()` reads refs at
-    call time — same pattern as drawFrame. Must set explicit `width`/
-    `height` SVG attributes for clean serialization.
-19. Wheel/drag pan should use pure pixel arithmetic: `shift = delta * (span /
+5.  Pan and zoom wheel deltas must be separated (pan uses 4× amplification).
+6.  Canvas PNG export: use `drawImage` with explicit source rect to crop
+    the backing store. `toBlob()` on the full canvas would export
+    mostly-empty pixels.
+7.  SVG export: `buildSVGForExport()` reads refs at call time — same
+    pattern as drawFrame. Must set explicit `width`/`height` SVG
+    attributes for clean serialization.
+8.  Wheel/drag pan should use pure pixel arithmetic: `shift = delta * (span /
     viewportPx)`. Calling `buildScale([vMin,vMax],...).invert()` for pan is
     wrong for fixed-partition scales and fragile for log.
-20. `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` each frame is the only reliable
+9.  `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` each frame is the only reliable
     way to apply DPR scaling — `ctx.scale(dpr,dpr)` inside the resize branch
     is lost when `ctx.restore()` pops the stack on subsequent frames.
-21. Canvas backing store must be sized to `viewH * dpr`, not `cssH * dpr`.
-    `canvas.clientHeight` returns the full scrollable extent (thousands of px
-    when zoomed) because the canvas is inside a sticky wrapper in a tall spacer.
-22. `isScrollSyncing` set synchronously inside scroll-sync useEffect provides
-    no protection against the native `scroll` event, which fires asynchronously
-    after `container.scrollTop` is assigned. In dynamic mode, `handleScroll`
-    should not drive `visibleDomain` at all — the scrollbar is an indicator.
-23. Pure math belongs in `src/lib/` with vitest coverage, not inline in
-    components. 17 tests now cover `buildScale` round-trip, `buildViewScale`
-    viewport mapping, zoom focal-point invariant, `clampDomain`, `computeLayout`.
-    Pre-commit hook at `.git/hooks/pre-commit` runs `npm test`.
-24. Focal-point zoom generalizes cleanly via **g-space**: parametrize every
+10. Canvas backing store sized to `viewH * dpr`. Even though session 9
+    removed the sticky wrapper, keep `viewH` sourced from
+    `scrollContainerRef` rather than `canvas.clientHeight` so a future
+    custom scrollbar in Session 10 can reintroduce a tall content area
+    without breaking the math.
+11. Pure math belongs in `src/lib/` with vitest coverage, not inline in
+    components. 44 tests cover the public scale API. Pre-commit hook at
+    `.git/hooks/pre-commit` runs `npm test`.
+12. Focal-point zoom generalizes cleanly via **g-space**: parametrize every
     scale type into a unit interval `g(age) ∈ [0,1]`, then anchor in g-space
     where pixel-fraction == g-fraction for all scale types. One formula
     (`newGMin = gFocal - pxFrac · newGSpan`) works for linear/log/equalSize/
     eraEqual. Adding a 5th scale type means implementing `g`/`g.invert` only.
-25. `buildViewScale`'s `virtualH` for non-linear scales MUST be derived from
-    g-span (`viewportH / gSpan`), not age-span. Using `fullSpan/visSpan`
-    over/under-fills the viewport for equalSize/eraEqual.
-26. Canvas CSS height must match backing-store height / dpr. If the canvas's
-    CSS parent is a sticky wrapper with `height: 100%` inside a spacer that's
-    `scrollableSize` tall, canvas CSS = scrollableSize while backing store =
-    `viewH * dpr` → browser stretches content vertically by factor
-    `scrollableSize / viewH`. Size the sticky wrapper to viewport height
-    (via ResizeObserver on the scroll container), not 100% of the spacer.
-27. React Compiler treats ref-typed props (e.g. `visibleDomainRef`) as
+13. The internal `buildViewScale`'s `virtualH` for non-linear scales
+    MUST be derived from g-span (`viewportH / gSpan`), not age-span.
+    Using `fullSpan/visSpan` over/under-fills the viewport for
+    equalSize/eraEqual.
+14. React Compiler treats ref-typed props (e.g. `visibleDomainRef`) as
     potentially-reactive. Wrapping `drawFrame` in `useCallback` with those
     props as deps triggers `react-hooks/preserve-manual-memoization`.
     Workaround: inline `drawFrame` as a closure inside the `useEffect`
     that owns the rAF loop; a sibling `tick()` closure handles
     self-scheduling. Do NOT try to hoist `drawFrame` back out.
-28. Dirty-flag rAF: keep a closure-scoped `last` snapshot of
+15. Dirty-flag rAF: keep a closure-scoped `last` snapshot of
     `{vMin, vMax, lateral, cssW, viewH}` inside `drawFrame`. If unchanged,
     `return` early. Effect re-creation on any prop change allocates a
     fresh `last` → forces the next frame to redraw. Don't promote `last`
     to a ref — the effect-recreation reset is the whole point.
-29. For fixed-partition scales (eraEqual), derive band boundaries from the
+16. For fixed-partition scales (eraEqual), derive band boundaries from the
     current unit data via `deriveEraEqualBands(allUnits)`, with a hardcoded
     fallback. Users can edit Phanerozoic Era start/end ages in the data
     editor; hardcoded bands make those edits invisible in the eraEqual view.
+17. `makeScale({...}) → { toY, toAge }` is the canonical scale interface.
+    `toY`/`toAge` operate in *viewport coordinates* per
+    [src/lib/coordinates.md](src/lib/coordinates.md) —
+    `toY(vMin) === eM`, `toY(vMax) === viewH`. g-space is an internal
+    implementation detail and must never appear at the API boundary.
+    All consumers (`drawFrame`, `buildSVGForExport`, wheel/drag pan,
+    keyboard zoom) call `makeScale` + `zoomToFocal`. `buildViewScale`
+    is no longer exported; treat it as a private helper.
+18. `react-hooks/refs` does NOT fire on `ref.current = stateValue`
+    written at the top level of the component body when the assignment
+    is straightforward "mirror state into a ref" — both
+    `effectiveMarginRef.current = headerHeight + 8` and
+    `dynamicMin/MaxAgeRef.current = dynamicMin/MaxAge` lint clean
+    in current code. Wrapping these in `useEffect` triggers
+    `react-hooks/preserve-manual-memoization` errors elsewhere because
+    the React Compiler treats the source state as "may be modified
+    later". Keep the render-time mirror.
+19. Custom scrollbar as a pure function of `visibleDomain` — no
+    `scrollTop`, no scroll events, no `isScrollSyncing`. `onScroll`
+    directly calls `setVisibleDomain` so no feedback loop is structurally
+    possible. The thumb position recomputes on every render from
+    `visibleDomain` prop.
+20. `clampMinAge`/`clampMaxAge` are the pan/zoom-out clamping extent
+    (10% beyond the data bounds). `dynamicMinAge`/`dynamicMaxAge` are the
+    true data extent used by `makeScale` and `zoomToFocal`. Keep them
+    separate — conflating them would warp the scale math.
+21. Dirty-flag snapshot must include `eM` to pick up header-height changes.
+    Without it, changing the header height writes `effectiveMarginRef.current`
+    synchronously (via the `onMove` handler) but the dirty-flag never
+    detects the change and the canvas doesn't update until another event.
+22. Custom scrollbar's track height must be measured via `ResizeObserver`
+    (stored in state) rather than reading `trackRef.current.clientHeight`
+    during render. The `react-hooks/refs` rule forbids ref reads during
+    render; derived pixel calculations that transitively depend on a ref
+    value are also flagged.
+23. `useEffect` dependency arrays are evaluated **immediately during render**,
+    not when the effect runs. A `useEffect(..., [layout])` declared before
+    `const layout = useMemo(...)` hits the TDZ and throws at runtime even
+    though the effect callback itself would access `layout` correctly (after
+    render). Always declare effects after all `const`/`useMemo` values they
+    reference in their dep array.
+24. `buildScale` for `equalSize`: ages older than all display units (beyond
+    `displayUnits[n-1].start`) must return `range[1]` (the old/bottom end),
+    not `range[0]`. Returning `range[0]` makes `g(vMax) = g(vMin)`,
+    collapsing `gSpan` to `≈ 1e-9` and inflating `virtualH` to `≈ 10^12` —
+    all drawing lands off-screen. This only triggers when `vMax > fullMax`,
+    which Session 10's `computeResetView` (+2% padding) introduced.
+25. `commitDomain` (the rAF-debounced `setVisibleDomain` helper) is the
+    standard path for all gesture-driven domain updates. Writing directly to
+    `visibleDomainRef.current` without a matching `setVisibleDomain` leaves
+    React state — and any props derived from it, including the scrollbar's
+    `visibleDomain` prop — stale until the next unrelated re-render.
+    Only read-only code paths (e.g. the draw loop reading refs) are exempt.
+26. `zoomToFocal`'s `fullMin`/`fullMax` define both the g-space
+    parametrization and the zoom-out limit. Pass `clampMinAgeRef` /
+    `clampMaxAgeRef` to align the zoom-out limit with the pan clamp
+    boundary (10% padded headroom). Pass `dynamicMinAgeRef` /
+    `dynamicMaxAgeRef` to cap zoom-out at the true data extent. The two
+    must never be swapped for `makeScale` — tick generation always uses
+    the true extent regardless.
+
+## Historical (Transform Mode — REMOVED in Session 9)
+
+These guided the SVG/D3 transform pipeline and are preserved here for
+context only. They no longer apply:
+
+H1. Single render useEffect — never split (transform mode).
+H2. Zoom mode switching must convert state, not reset.
+H3. `isScrollSyncing` ref prevented scroll↔zoom feedback loops.
+H4. `transformRef` prevented stale closures in transform mode.
+H5. Counter-scale useEffect declared **after** render useEffect.
+H6. `applyCounterScale` had to be a stable reference (`useCallback(fn,[])`).
+H7. `data-block-*` attributes on text elements decoupled render-time
+    layout from zoom-time re-layout.
+H8. Block label text and rect both needed `data-unit-id` for SVG tooltip.
+H9. `handleScroll` returned early when `zoomMode !== "transform"`.
+H10. `isScrollSyncing` set synchronously inside scroll-sync useEffect
+     gave no protection against the async native `scroll` event.
+H11. Sticky canvas wrapper height had to match viewportH (tracked via
+     ResizeObserver); using `height: 100%` of the scrollable spacer
+     stretched canvas content vertically.
+H12. Scroll sync formulas (`ty = eM*(1-k) - scrollTop*(viewH-2*eM)/viewH`)
+     used symmetric margin while top/bottom margins were asymmetric —
+     a small inconsistency in transform mode.
 
 ------------------------------------------------------------------------
 
 # Architectural Decision — Canvas Migration
 
-## Status: Complete (Phases 1–5)
+## Status: Complete (Phases 1–5) + Transform mode removed
 
 All phases of the canvas migration are implemented. The SVG rendering
-pipeline is retained for transform mode only.
+pipeline (transform mode) was removed entirely in Session 9. Canvas is
+now the only renderer.
 
 ## Migration phases
 
@@ -557,6 +713,58 @@ pipeline is retained for transform mode only.
 ### Phase 3 ✅ — Picks column + time axis
 ### Phase 4 ✅ — GSSP/GSSA markers + tooltip hit testing
 ### Phase 5 ✅ — Export (SVG via buildSVGForExport, PNG via buildCanvasPNGBlob)
+### Session 9 ✅ — Transform mode REMOVED; canvas is sole renderer
+
+------------------------------------------------------------------------
+
+# Deferred Issues (logged for future sessions)
+
+## D-1 — Non-linear scale behavior during pan/zoom feels disorienting
+
+When panning or zooming in equalSize or eraEqual modes, the visible
+layout appears to shift in ways that feel unpredictable. The scale is
+always built from the full unit data (not filtered by visible domain),
+so this is intrinsic to how discrete-slot scales behave when the viewport
+doesn't align with slot boundaries. Needs a design conversation before
+any code change. Possible approaches include: snapping the view to slot
+boundaries on gesture end, rendering slot boundaries more visibly as
+landmarks, or adding a mode that anchors the scale to the full domain
+during gestures. Do not attempt to fix without product-level discussion.
+
+## D-2 — Export drift vs live canvas (two issues)
+
+Both in buildSVGForExport in App.jsx:
+
+1. Export passes viewH: viewH - BOTTOM_MARGIN to makeScale, while
+   drawFrame passes viewH: viewH. This means export leaves an ~8px
+   sliver at the bottom that the live canvas does not. Violates the
+   coordinates.md contract that toY(vMax) === viewH.
+
+2. Export passes units: scaleUnits where scaleUnits filters effectiveUnits
+   by isUnitVisible for equalSize. Live drawFrame passes units: allUnits
+   unfiltered. For equalSize with hidden units, export and live produce
+   different layouts.
+
+Fix requires deciding which behavior is correct (likely live's behavior
+is authoritative per coordinates.md) and aligning both. Deferred until
+export features are being refined.
+
+## D-3 — Data Editor edits and eraEqual band widths
+
+Previous testing showed that editing Phanerozoic Era start ages in the
+Data Editor can cause visual glitches in eraEqual mode (Paleocene
+covering Precambrian in one observed case). deriveEraEqualBands correctly
+reflects the edit in band structure, but the virtual-canvas pixel math
+may have a boundary condition not covered by current tests. Add tests
+for: edited era boundaries that don't match child unit ages, edited Eon
+boundaries, eraEqual with missing Phanerozoic eras.
+
+## D-4 — Scrollbar thumb UX during drag pan ✅ RESOLVED (Session 12)
+
+Both drag-pan and ctrl+wheel zoom now route through `commitDomain`,
+which calls `setVisibleDomain` via rAF every frame. Thumb updates live
+during all gestures. `onMouseUp` cancels any pending rAF and flushes
+synchronously on release.
 
 ------------------------------------------------------------------------
 
@@ -566,63 +774,82 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Canvas migration complete. Session 7 extracted
-`TimelineCanvas` (~624 lines) from App.jsx (Phase 3), added a dirty-flag
-rAF skip (Phase 4), memoized derived state in App.jsx (Phase 5), cleaned
-the lint baseline to 0 errors / 0 warnings, and fixed known issue #6
-(eraEqual boundaries now derive from current unit data).
+GeoTimeline — Canvas-only renderer. Sessions 10–12 added custom scrollbar,
+initial view centering, zoom-out headroom, and two targeted fixes in S12:
+(1) scrollbar thumb now updates live during ctrl+wheel zoom and drag pan
+(both paths route through `commitDomain`); (2) ctrl+wheel zoom-out now
+uses `clampMinAgeRef`/`clampMaxAgeRef` as `fullMin`/`fullMax` in
+`zoomToFocal`, matching the pan clamp boundary (10% headroom).
+App.jsx ~1630 lines. Test count 44 / 44. Lint 0 / 0.
+
 Stack: React 19 + D3 v7 + Vite + Vitest. Geologic timescale visualizer.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).
-Dynamic mode (canvas + rAF loop) is the default and primary rendering path.
-Transform mode (SVG + D3 zoom) is retained as a fallback.
 
-**Session 7 changes are NOT browser-verified** — user was remote. See the
-"Pending Browser Verification" section in PROJECT_STATE.md for the
-checklist. Prompt the user to run through it before starting new work.
+**Sessions 7–12 changes are NOT browser-verified** — user was remote.
+See the "Pending Browser Verification" section in PROJECT_STATE.md for
+the full checklist. Prompt the user to run through it before starting
+new work.
 
 See PROJECT_STATE.md for full architecture, feature status, and lessons.
 
 Architecture constraints (never break):
-- Pure math lives in src/lib/scale.js (buildScale, buildViewScale,
-  computeZoomedDomain, clampDomain, computeLayout, deriveEraEqualBands,
-  formatTickLabel). Tested in src/lib/__tests__/scale.test.js (21 cases).
+- Canvas (TimelineCanvas.jsx) is the only renderer. No transform mode,
+  no `<svg>` live element, no `svgRef`, no `zoomBehaviorRef`, no
+  `applyCounterScale`, no `handleScroll`. Do NOT reintroduce them.
+- Pure math lives in src/lib/scale.js. Public API: `makeScale`
+  (canonical), `zoomToFocal`, `buildScale` (tick generation only),
+  `clampDomain`, `computeLayout`, `deriveEraEqualBands`,
+  `formatTickLabel`. `buildViewScale` is INTERNAL. 44 vitest cases.
   Pre-commit hook runs npm test.
+- `makeScale` always receives `fullMin/fullMax = dynamicMinAgeRef/dynamicMaxAgeRef`
+  (true data extent) — tick generation and scale behavior anchor to real data.
+- `zoomToFocal` receives `fullMin/fullMax = clampMinAgeRef/clampMaxAgeRef`
+  (padded extent) — this sets the zoom-out limit to match pan's clamp boundary.
+  Keep these two distinctions. Never pass clamp refs to `makeScale`; never
+  pass dynamic refs to the `zoomToFocal` call in the wheel handler.
+- `clampDomain` calls in TimelineCanvas pan handlers use `clampMinAgeRef`/
+  `clampMaxAgeRef`. `makeScale`/`zoomToFocal` use `dynamicMinAgeRef`/
+  `dynamicMaxAgeRef`. Never swap these.
+- Coordinate contract (src/lib/coordinates.md): `makeScale` returns
+  `{ toY, toAge }` in viewport coords — `toY(vMin) === eM`,
+  `toY(vMax) === viewH`. g-space is internal.
 - Data constants (`ALL_UNITS`, `UNIT_MAP`, `isUnitVisible`) live in
   src/lib/units.js, NOT inline in App.jsx.
-- Canvas rendering lives in src/components/TimelineCanvas.jsx. It is a
-  passive component — all state stays in App.jsx and is passed as props.
+- Canvas rendering in src/components/TimelineCanvas.jsx — passive
+  component; all state in App.jsx, passed as props.
 - drawFrame is an inline closure inside a useEffect in TimelineCanvas.jsx;
-  NOT a useCallback. React Compiler's `preserve-manual-memoization` flags
-  ref-typed props. A sibling `tick()` closure self-schedules via rAF.
-- drawFrame has a closure-scoped dirty-flag snapshot (last vMin/vMax/
-  lateral/cssW/viewH). Skip redraws when unchanged. Effect re-creation
-  resets the snapshot — don't hoist `last` to a ref.
+  NOT a useCallback. React Compiler flags ref-typed props. Sibling
+  `tick()` closure self-schedules via rAF.
+- drawFrame dirty-flag snapshot: `{ last vMin/vMax/lateral/cssW/viewH/eM }`.
+  Skip redraws when unchanged. Effect re-creation resets the snapshot —
+  don't hoist `last` to a ref.
 - buildScale() is stateless w.r.t. zoom — never filter slots by visible domain.
 - buildScale eraEqual branch MUST use `deriveEraEqualBands(allUnits)`;
   never re-inline hardcoded era boundaries.
-- buildViewScale() is the single view-scale source for drawFrame AND
-  buildSVGForExport — export must not drift from live.
-- computeZoomedDomain() anchors in g-space (unit-interval parametrization)
-  — one formula for all scale types. Do NOT reintroduce age-fraction math.
-- buildViewScale virtualH for non-linear scales = viewportH / gSpan,
-  NOT viewportH * (fullSpan/visSpan). Age-span is not pixel-span.
+- `zoomToFocal` anchors in g-space — one formula for all scale types.
 - No setState during zoom gestures — visibleDomainRef.current only.
 - No setState during drag pan — ref-only; single flush on mouseUp.
 - effectiveMarginRef.current = headerHeight + 8 (TOP margin only).
-- BOTTOM_MARGIN = 8 still exists but is NOT used in drawFrame scale ranges
-  or culling. Still used in SVG/export path.
+  The header drag `onMove` handler must write BOTH the ref (for immediate
+  rAF effect) AND call setHeaderHeight (for React re-render). Mirror it at
+  the top level of the component body — do NOT wrap in useEffect.
+- BOTTOM_MARGIN = 8 not used in drawFrame; used in SVG export path.
 - viewH = scrollContainerRef.current.clientHeight (NOT canvas.clientHeight).
-- Canvas backing store sized to viewH*dpr (not cssH*dpr).
-- Sticky canvas wrapper height MUST match viewportH (tracked via
-  ResizeObserver), NOT 100% of the spacer — otherwise canvas content
-  stretches vertically by scrollableSize/viewH.
+- Canvas backing store sized to viewH*dpr.
 - ctx.setTransform(dpr,0,0,dpr,0,0) applied every frame (not only on resize).
-- Clip region [0,0,cssW,viewH] set via ctx.save()/ctx.clip() each frame.
+- Clip region [0,0,cssW,viewH] via ctx.save()/ctx.clip() each frame.
 - Wheel/drag pan: pure pixel arithmetic, no buildScale call.
-- handleScroll returns early when zoomMode !== "transform". Scrollbar in
-  dynamic mode is one-way indicator; never writes back to visibleDomain.
 - hitBoxesRef populated each frame for tooltip hit testing.
 - Export: buildSVGForExport() for SVG, buildCanvasPNGBlob() for PNG.
+- Scroll container is `overflow: hidden`. CustomScrollbar is absolutely
+  positioned on right edge — no scrollTop, no scroll events, no feedback
+  loop. Track height tracked via ResizeObserver (not ref reads during render).
+- URL hash encodes only `visibleDomain` and `lateralOffset`. `hiddenUnits`
+  restored from localStorage only.
+- `computeResetView({ dynamicMinAge, dynamicMaxAge, layout, viewportWidth })`
+  computes padded domain (+2% at bottom) and centered lateralOffset. Call
+  it in: mount effect (guarded by `hasInitializedView`), `handleResetZoom`,
+  and the hidden-units reset effect.
 
 Lint baseline: 0 errors / 0 warnings. Keep it that way.
 

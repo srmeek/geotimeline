@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildScale, buildViewScale, computeZoomedDomain, clampDomain, computeLayout, deriveEraEqualBands } from "../scale.js";
+import {
+  buildScale, clampDomain, computeLayout,
+  deriveEraEqualBands, makeScale, zoomToFocal,
+} from "../scale.js";
 
 // Minimal synthetic unit set covering enough structure for equalSize/eraEqual.
 const UNITS = [
@@ -8,6 +11,17 @@ const UNITS = [
   { id: "mes",  levelOrder: 2, parent: "phan", start: 251.902, end: 66 },
   { id: "pal",  levelOrder: 2, parent: "phan", start: 538.8, end: 251.902 },
   // Era-level children so equalSize at level 2 gets 3 slots
+];
+
+// Richer unit set including Eons (for eraEqual deriveBands) and Eras at level 2.
+const FULL_UNITS = [
+  { id: "Phanerozoic", rankTime: "Eon", parent: null,           start: 538.8,   end: 0,     levelOrder: 1 },
+  { id: "Proterozoic", rankTime: "Eon", parent: "Precambrian",  start: 2500,    end: 538.8, levelOrder: 1 },
+  { id: "Archean",     rankTime: "Eon", parent: "Precambrian",  start: 4031,    end: 2500,  levelOrder: 1 },
+  { id: "Hadean",      rankTime: "Eon", parent: "Precambrian",  start: 4567,    end: 4031,  levelOrder: 1 },
+  { id: "Cenozoic",    rankTime: "Era", parent: "Phanerozoic",  start: 66,      end: 0,     levelOrder: 2 },
+  { id: "Mesozoic",    rankTime: "Era", parent: "Phanerozoic",  start: 251.902, end: 66,    levelOrder: 2 },
+  { id: "Paleozoic",   rankTime: "Era", parent: "Phanerozoic",  start: 538.8,   end: 251.902, levelOrder: 2 },
 ];
 
 describe("buildScale round-trip", () => {
@@ -41,80 +55,6 @@ describe("buildScale round-trip", () => {
     for (const a of [10, 150, 400, 1000]) {
       expect(s.invert(s(a))).toBeCloseTo(a, 1);
     }
-  });
-});
-
-describe("buildViewScale invariants", () => {
-  const baseline = {
-    fullMin: 0, fullMax: 4567,
-    eM: 56, viewH: 800,
-    units: UNITS, equalSizeLevel: 2,
-  };
-
-  it("linear: scale maps vMin→eM, vMax→viewH", () => {
-    const { scale } = buildViewScale({ ...baseline, scaleType: "linear", vMin: 0, vMax: 100 });
-    expect(scale(0)).toBeCloseTo(baseline.eM, 3);
-    expect(scale(100)).toBeCloseTo(baseline.viewH, 3);
-  });
-
-  it("equalSize: scale maps vMin→eM (top of viewport)", () => {
-    const { scale } = buildViewScale({ ...baseline, scaleType: "equalSize", vMin: 66, vMax: 400, fullMax: 538.8 });
-    expect(scale(66)).toBeCloseTo(baseline.eM, 1);
-  });
-
-  it("eraEqual: scale maps vMin→eM", () => {
-    const { scale } = buildViewScale({ ...baseline, scaleType: "eraEqual", vMin: 50, vMax: 500 });
-    expect(scale(50)).toBeCloseTo(baseline.eM, 1);
-  });
-});
-
-describe("computeZoomedDomain focal-point invariant", () => {
-  // Core guarantee: after zoom, newScale(focalAge) === cursorY (within 1px).
-  const baseline = {
-    fullMin: 0, fullMax: 4567,
-    eM: 56, viewH: 800,
-    units: UNITS, equalSizeLevel: 2,
-  };
-
-  function runInvariant(scaleType, vMin, vMax, cursorY, zoomFactor, fullMax = 4567) {
-    const bl = { ...baseline, fullMax };
-    const { scale: curScale } = buildViewScale({ ...bl, scaleType, vMin, vMax });
-    const focalAge = curScale.invert(cursorY);
-
-    const [nMin, nMax] = computeZoomedDomain({
-      ...bl, scaleType, vMin, vMax, cursorY, zoomFactor,
-    });
-    const { scale: newScale } = buildViewScale({ ...bl, scaleType, vMin: nMin, vMax: nMax });
-    const cursorYAfter = newScale(focalAge);
-
-    // If domain got clamped to the full range, allow larger drift.
-    const clamped = nMin === bl.fullMin || nMax === bl.fullMax;
-    const tol = clamped ? 400 : 1;
-    expect(Math.abs(cursorYAfter - cursorY)).toBeLessThanOrEqual(tol);
-  }
-
-  it("linear: zoom in, cursor mid-viewport", () => {
-    runInvariant("linear", 0, 1000, 400, 0.5);
-  });
-
-  it("linear: zoom out, cursor high in viewport", () => {
-    runInvariant("linear", 100, 300, 200, 2.0);
-  });
-
-  it("equalSize: zoom in, cursor mid-viewport — focal-age invariant", () => {
-    runInvariant("equalSize", 66, 538.8, 400, 0.5, 538.8);
-  });
-
-  it("equalSize: zoom in hard, cursor off-center", () => {
-    runInvariant("equalSize", 0, 538.8, 600, 0.25, 538.8);
-  });
-
-  it("eraEqual: zoom in, cursor mid-viewport — focal-age invariant", () => {
-    runInvariant("eraEqual", 0, 4567, 500, 0.5);
-  });
-
-  it("eraEqual: zoom in, cursor high", () => {
-    runInvariant("eraEqual", 100, 3000, 200, 0.3);
   });
 });
 
@@ -185,3 +125,128 @@ describe("deriveEraEqualBands", () => {
     expect(bands[0]).toEqual({ start: 66, end: 0 }); // fallback
   });
 });
+
+// ---------------------------------------------------------------------------
+// makeScale — coordinate contract (see src/lib/coordinates.md)
+// ---------------------------------------------------------------------------
+
+// Per-scale-type configs chosen so vMin/vMax sit strictly inside the scale
+// domain and round-trip ages fall inside actual slots for equalSize/eraEqual.
+const SCALE_CONFIGS = {
+  linear: {
+    scaleType: "linear",
+    vMin: 10, vMax: 1000,
+    fullMin: 0, fullMax: 4567,
+    units: FULL_UNITS, equalSizeLevel: 2,
+    roundTripAges: [10, 100, 500, 900, 1000],
+  },
+  log: {
+    scaleType: "log",
+    vMin: 1, vMax: 100,
+    fullMin: 0.001, fullMax: 4567,
+    units: FULL_UNITS, equalSizeLevel: 2,
+    roundTripAges: [1, 5, 20, 50, 100],
+  },
+  equalSize: {
+    scaleType: "equalSize",
+    vMin: 10, vMax: 400,
+    fullMin: 0, fullMax: 538.8,
+    units: FULL_UNITS, equalSizeLevel: 2,
+    // Strictly inside Cen/Mes/Pal slots
+    roundTripAges: [10, 50, 100, 200, 300, 400],
+  },
+  eraEqual: {
+    scaleType: "eraEqual",
+    vMin: 30, vMax: 1000,
+    fullMin: 0, fullMax: 4567,
+    units: FULL_UNITS, equalSizeLevel: 2,
+    // Strictly inside era bands (Cen, Mes, Pal, Precambrian)
+    roundTripAges: [30, 100, 400, 800],
+  },
+};
+
+const VIEWPORT = { eM: 56, viewH: 800 };
+
+function buildScaleCfg(scaleType) {
+  return { ...SCALE_CONFIGS[scaleType], ...VIEWPORT };
+}
+
+for (const scaleType of ["linear", "log", "equalSize", "eraEqual"]) {
+  describe(`makeScale coordinate contract [${scaleType}]`, () => {
+    const cfg = buildScaleCfg(scaleType);
+    const { toY, toAge } = makeScale(cfg);
+
+    it("toY(vMin) === eM", () => {
+      expect(Math.abs(toY(cfg.vMin) - cfg.eM)).toBeLessThan(1e-9);
+    });
+
+    it("toY(vMax) === viewH", () => {
+      expect(Math.abs(toY(cfg.vMax) - cfg.viewH)).toBeLessThan(1e-9);
+    });
+
+    it("toY is monotonically increasing with age", () => {
+      let prev = -Infinity;
+      const steps = 20;
+      for (let i = 0; i <= steps; i++) {
+        const age = cfg.vMin + (cfg.vMax - cfg.vMin) * (i / steps);
+        const y = toY(age);
+        expect(y).toBeGreaterThan(prev);
+        prev = y;
+      }
+    });
+
+    it("toAge(toY(age)) round-trips within 1e-9", () => {
+      for (const a of cfg.roundTripAges) {
+        expect(Math.abs(toAge(toY(a)) - a)).toBeLessThan(1e-9);
+      }
+    });
+
+    it("toY(toAge(y)) round-trips for y in [eM, viewH]", () => {
+      const span = cfg.viewH - cfg.eM;
+      // Skip exact slot boundaries where equalSize/eraEqual invert has a
+      // Math.floor ambiguity. Interior samples round-trip cleanly.
+      for (const frac of [0.01, 0.17, 0.33, 0.5, 0.67, 0.83, 0.99]) {
+        const y = cfg.eM + frac * span;
+        expect(Math.abs(toY(toAge(y)) - y)).toBeLessThan(1e-9);
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// zoomToFocal — zoom invariants
+// ---------------------------------------------------------------------------
+
+for (const scaleType of ["linear", "log", "equalSize", "eraEqual"]) {
+  describe(`makeScale zoom invariants [${scaleType}]`, () => {
+    const cfg = buildScaleCfg(scaleType);
+
+    it("zoomToFocal keeps focal age under cursor", () => {
+      const cursorY = cfg.eM + 0.4 * (cfg.viewH - cfg.eM);
+      const { toAge: toAgeBefore } = makeScale(cfg);
+      const focalAge = toAgeBefore(cursorY);
+
+      const [nMin, nMax] = zoomToFocal({ ...cfg, cursorY, zoomFactor: 0.5 });
+      const { toY: toYAfter } = makeScale({ ...cfg, vMin: nMin, vMax: nMax });
+
+      const clamped = nMin === cfg.fullMin || nMax === cfg.fullMax;
+      const tol = clamped ? 400 : 1;
+      expect(Math.abs(toYAfter(focalAge) - cursorY)).toBeLessThanOrEqual(tol);
+    });
+
+    it("zoomToFocal with zoomFactor=1 is a no-op", () => {
+      const cursorY = cfg.eM + 0.5 * (cfg.viewH - cfg.eM);
+      const [nMin, nMax] = zoomToFocal({ ...cfg, cursorY, zoomFactor: 1 });
+      expect(Math.abs(nMin - cfg.vMin)).toBeLessThan(1e-6);
+      expect(Math.abs(nMax - cfg.vMax)).toBeLessThan(1e-6);
+    });
+
+    it("zoomToFocal with large zoomFactor clamps to [fullMin, fullMax]", () => {
+      const cursorY = cfg.eM + 0.5 * (cfg.viewH - cfg.eM);
+      const [nMin, nMax] = zoomToFocal({ ...cfg, cursorY, zoomFactor: 10 });
+      expect(nMin).toBeCloseTo(cfg.fullMin, 6);
+      expect(nMax).toBeCloseTo(cfg.fullMax, 6);
+    });
+  });
+}
+

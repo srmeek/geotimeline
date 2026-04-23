@@ -3,11 +3,11 @@ import * as d3 from "d3";
 
 import { computeFitAndWrap } from "../renderers/BlockRenderer";
 import {
-  buildViewScale,
   clampDomain,
   computeLayout,
-  computeZoomedDomain,
   formatTickLabel,
+  makeScale,
+  zoomToFocal,
 } from "../lib/scale.js";
 import { UNIT_MAP, isUnitVisible } from "../lib/units.js";
 
@@ -17,12 +17,12 @@ export default function TimelineCanvas({
   canvasRef, hitBoxesRef, rafHandleRef,
   visibleDomainRef, lateralOffsetRef,
   dynamicMinAgeRef, dynamicMaxAgeRef,
-  effectiveMarginRef, scrollContainerRef, isScrollSyncing,
+  clampMinAgeRef, clampMaxAgeRef,
+  effectiveMarginRef, scrollContainerRef,
   effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths,
   scaleType, equalSizeLevel,
   fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules,
   labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP,
-  zoomMode,
   setVisibleDomain, setLateralOffset, setHoverUnit, setTooltipPos,
 }) {
   // ── Canvas rAF loop: drawFrame defined inline so refs aren't treated as reactive deps ──
@@ -30,7 +30,7 @@ export default function TimelineCanvas({
   // and skips the draw if nothing changed. Effect re-creation (on dep change) starts with
   // a fresh closure → last.vMin === null forces a redraw. Saves ~60fps of idle CPU burn.
   useEffect(() => {
-    const last = { vMin: null, vMax: null, lateral: null, cssW: null, viewH: null };
+    const last = { vMin: null, vMax: null, lateral: null, cssW: null, viewH: null, eM: null };
 
     const drawFrame = () => {
       const canvas = canvasRef.current;
@@ -43,12 +43,13 @@ export default function TimelineCanvas({
 
       const [vMin, vMax] = visibleDomainRef.current;
       const lateral = lateralOffsetRef.current;
+      const eM = effectiveMarginRef.current;
       if (last.vMin === vMin && last.vMax === vMax && last.lateral === lateral &&
-          last.cssW === cssW && last.viewH === viewH) {
+          last.cssW === cssW && last.viewH === viewH && last.eM === eM) {
         return; // nothing changed since last draw
       }
       last.vMin = vMin; last.vMax = vMax; last.lateral = lateral;
-      last.cssW = cssW; last.viewH = viewH;
+      last.cssW = cssW; last.viewH = viewH; last.eM = eM;
 
       const needsResize = canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(viewH * dpr);
       if (needsResize) {
@@ -64,7 +65,6 @@ export default function TimelineCanvas({
       ctx.rect(0, 0, cssW, viewH);
       ctx.clip();
 
-      const eM      = effectiveMarginRef.current;
       const hitBoxes = [];
 
       const allUnits   = effectiveUnits;
@@ -78,7 +78,7 @@ export default function TimelineCanvas({
       ];
       const frameLayout = computeLayout(cols, effectiveColumnWidths, MARGIN);
 
-      const { scale } = buildViewScale({
+      const { toY: scale } = makeScale({
         scaleType,
         vMin, vMax,
         fullMin: dynamicMinAgeRef.current, fullMax: dynamicMaxAgeRef.current,
@@ -423,9 +423,8 @@ export default function TimelineCanvas({
     return () => cancelAnimationFrame(raf);
   }, [effectiveUnits, hiddenUnits, columnConfig, effectiveColumnWidths, scaleType, equalSizeLevel, fontSize, fontFamily, labelOrientation, contrastText, fontBold, fontItalic, fontRules, labelMode, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, timeUnit, showGSSP]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Dynamic-mode event wiring: wheel zoom/pan, click-drag pan, keyboard
+  // Event wiring: wheel zoom/pan, click-drag pan, keyboard
   useEffect(() => {
-    if (zoomMode !== "dynamic") return;
     const canvasEl = canvasRef.current;
     if (!canvasEl) return;
 
@@ -453,16 +452,16 @@ export default function TimelineCanvas({
       const zoomDelta = e.deltaY * (e.deltaMode === 1 ?  30 : e.deltaMode === 2 ? 300 : 1);
 
       if (e.ctrlKey) {
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-
         const cursorY  = (e.offsetY != null) ? e.offsetY : (e.clientY - canvasEl.getBoundingClientRect().top);
-        const fullMin  = dynamicMinAgeRef.current;
-        const fullMax  = dynamicMaxAgeRef.current;
+        // Use the padded clamp extent so zoom-out can reveal the 10%
+        // headroom beyond the data bounds, matching pan clamp behavior.
+        const fullMin  = clampMinAgeRef.current;
+        const fullMax  = clampMaxAgeRef.current;
         const fullSpan = fullMax - fullMin;
         const speedScale = Math.pow(span / fullSpan, 0.2);
         const zoomFactor = Math.pow(2, zoomDelta * 0.003 * speedScale);
 
-        const [newMin, newMax] = computeZoomedDomain({
+        const [newMin, newMax] = zoomToFocal({
           scaleType,
           vMin: refMin, vMax: refMax,
           fullMin, fullMax,
@@ -473,14 +472,14 @@ export default function TimelineCanvas({
         });
 
         if (newMin < newMax) {
-          visibleDomainRef.current = [newMin, newMax];
+          commitDomain(newMin, newMax);
         }
       } else {
         const viewportPx = Math.max(1, h - eM);
         const shift = panDelta * (span / viewportPx);
         const [newMin, newMax] = clampDomain(
           refMin + shift, refMax + shift,
-          dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+          clampMinAgeRef.current, clampMaxAgeRef.current,
         );
         commitDomain(newMin, newMax);
       }
@@ -499,7 +498,6 @@ export default function TimelineCanvas({
         domain: [...visibleDomainRef.current],
         lateral: lateralOffsetRef.current
       };
-      isScrollSyncing.current = true;
       canvasEl.style.cursor = "grabbing";
     };
 
@@ -516,10 +514,10 @@ export default function TimelineCanvas({
       const shift = -dy * (span / viewportPx);
       const [clampedMin, clampedMax] = clampDomain(
         refMin + shift, refMax + shift,
-        dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+        clampMinAgeRef.current, clampMaxAgeRef.current,
       );
       if (clampedMin < clampedMax) {
-        visibleDomainRef.current = [clampedMin, clampedMax];
+        commitDomain(clampedMin, clampedMax);
       }
 
       const newLateral = pan.lateral + dx;
@@ -529,9 +527,10 @@ export default function TimelineCanvas({
 
     const onMouseUp = () => {
       if (pan) {
+        // Flush any pending commitDomain immediately on release.
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
         setVisibleDomain([...visibleDomainRef.current]);
       }
-      isScrollSyncing.current = false;
       pan = null;
       canvasEl.style.cursor = "grab";
     };
@@ -548,7 +547,7 @@ export default function TimelineCanvas({
         const newSpan = span * (isZoomIn ? 1 / 1.5 : 1.5);
         const [newMin, newMax] = clampDomain(
           center - newSpan / 2, center + newSpan / 2,
-          dynamicMinAgeRef.current, dynamicMaxAgeRef.current,
+          clampMinAgeRef.current, clampMaxAgeRef.current,
         );
         if (newMin < newMax) { visibleDomainRef.current = [newMin, newMax]; setVisibleDomain([newMin, newMax]); }
         return;
@@ -562,8 +561,8 @@ export default function TimelineCanvas({
         const shift = span * 0.1 * (event.key === "ArrowUp" ? -1 : 1);
         let newMin = vMin + shift;
         let newMax = vMax + shift;
-        if (newMin < dynamicMinAgeRef.current) { newMin = dynamicMinAgeRef.current; newMax = newMin + span; }
-        if (newMax > dynamicMaxAgeRef.current) { newMax = dynamicMaxAgeRef.current; newMin = Math.max(dynamicMinAgeRef.current, newMax - span); }
+        if (newMin < clampMinAgeRef.current) { newMin = clampMinAgeRef.current; newMax = newMin + span; }
+        if (newMax > clampMaxAgeRef.current) { newMax = clampMaxAgeRef.current; newMin = Math.max(clampMinAgeRef.current, newMax - span); }
         visibleDomainRef.current = [newMin, newMax];
         setVisibleDomain([newMin, newMax]);
       } else {
@@ -586,7 +585,7 @@ export default function TimelineCanvas({
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [zoomMode, scaleType, equalSizeLevel, effectiveUnits]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scaleType, equalSizeLevel, effectiveUnits]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <canvas
@@ -598,7 +597,6 @@ export default function TimelineCanvas({
         width: "100%",
         height: "100%",
         cursor: "grab",
-        pointerEvents: zoomMode === "dynamic" ? "auto" : "none",
         display: "block",
       }}
       onMouseMove={(e) => {

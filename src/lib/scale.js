@@ -132,6 +132,7 @@ export function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
           return range[0] + (i + fraction) * unitHeight;
         }
       }
+      if (age > displayUnits[n - 1].start) return range[1]; // older than all units → bottom
       if (age < displayUnits[n - 1].end) return range[1];
       return range[0];
     };
@@ -196,24 +197,14 @@ export function buildScale(scaleType, domain, range, allUnits, equalSizeLevel) {
   return d3.scaleLinear().domain(domain).range(range);
 }
 
-/**
- * Shared "view scale" builder. Used by both drawFrame (live) and buildSVGForExport
- * so the two cannot drift.
- *
- * For equalSize/eraEqual: returns a virtual-canvas scale where the full domain
- * is laid out across a virtual height, then offset so that vMin lands at eM and
- * vMax lands at viewH. virtualH is derived from the g-space span (the fraction
- * of the full canvas the view occupies), not the age span — age ≠ pixel for
- * non-linear scales, so using age-span over-fills or under-fills the viewport.
- * For linear/log: returns the simple positional scale over [eM, viewH].
- *
- * Returns { scale, fullScale, pixelOffset }.
- * - `scale`: age → pixel in the currently visible viewport.
- * - `fullScale`: present only for equalSize/eraEqual; age → virtual pixel
- *   in the expanded canvas. Used for zoom focal-age math.
- * - `pixelOffset`: fullScale(vMin); zero for linear/log.
- */
-export function buildViewScale({
+// Internal helper used by makeScale and zoomToFocal. Not exported — consumers
+// should call makeScale, which returns { toY, toAge } per coordinates.md.
+// For equalSize/eraEqual: virtual-canvas scale where the full domain is laid
+// out across a virtual height, then offset so vMin lands at eM and vMax at
+// viewH. virtualH is derived from the g-space span (fraction of full canvas
+// occupied by the view), not the age span — age ≠ pixel for non-linear scales.
+// For linear/log: simple positional scale over [eM, viewH].
+function buildViewScale({
   scaleType, vMin, vMax, fullMin, fullMax, eM, viewH, units, equalSizeLevel,
 }) {
   if (scaleType === "equalSize" || scaleType === "eraEqual") {
@@ -235,25 +226,41 @@ export function buildViewScale({
 }
 
 /**
- * Compute the new [vMin, vMax] after a zoom gesture, anchored so that
- * `focalAge` stays at the cursor's pixel position on screen — for ANY scale
- * type, including the non-linear equalSize/eraEqual scales.
+ * Canonical scale interface. Returns { toY, toAge } where:
+ *   - toY(age) maps an age to a y coordinate in viewport coordinates
+ *     ([eM, viewH]) per coordinates.md.
+ *   - toAge(y) is the inverse of toY.
  *
- * Strategy: work in "g-space" — the unit-interval parametrization of the
- * current scale. g(age) ∈ [0, 1] is the fraction of the full canvas at which
- * `age` appears. For linear, g(age) = (age - fullMin) / fullSpan. For log
- * and equalSize/eraEqual, g is non-linear but still monotonic. Pixel
- * fractions are linear in g under buildViewScale, so anchoring in g-space
- * guarantees the focal age stays under the cursor for any scale type.
+ * Works uniformly for linear, log, equalSize, and eraEqual scale types.
+ * Internal representations (g-space, virtual-canvas offsets) are hidden
+ * behind this interface — callers never see them.
  *
- * zoomFactor is interpreted as a *visual* zoom (the inverse of how much the
- * canvas appears magnified). 0.5 = zoom in (content 2× larger). For linear
- * this matches age-span scaling; for non-linear it correctly reflects what
- * the user sees.
+ * toY(vMin) === eM and toY(vMax) === viewH exactly (at floating-point
+ * precision). toAge(y) for y outside [eM, viewH] extrapolates linearly
+ * in the underlying scale.
+ */
+export function makeScale({
+  scaleType, vMin, vMax, fullMin, fullMax,
+  eM, viewH, units, equalSizeLevel,
+}) {
+  const { scale } = buildViewScale({
+    scaleType, vMin, vMax, fullMin, fullMax, eM, viewH, units, equalSizeLevel,
+  });
+  return {
+    toY:   (age) => scale(age),
+    toAge: (y)   => scale.invert(y),
+  };
+}
+
+/**
+ * Compute the new [vMin, vMax] after a zoom gesture, anchored so that the
+ * age currently under the cursor stays at the cursor's pixel position on
+ * screen. Works uniformly for all scale types.
  *
+ * zoomFactor < 1 zooms in (view span shrinks). zoomFactor > 1 zooms out.
  * Returns [newMin, newMax] clamped to [fullMin, fullMax].
  */
-export function computeZoomedDomain({
+export function zoomToFocal({
   scaleType, vMin, vMax, fullMin, fullMax,
   eM, viewH, units, equalSizeLevel,
   cursorY, zoomFactor,
