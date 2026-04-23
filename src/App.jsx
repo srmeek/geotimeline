@@ -15,15 +15,42 @@ import CustomScrollbar from "./components/CustomScrollbar.jsx";
 const ICS_MIN_AGE = 0;
 const ICS_MAX_AGE = 4567.30;
 const MARGIN = 14;       // px horizontal offset applied to column positions
-const RESET_DOMAIN_PADDING_FACTOR = 0.02;  // 2% bottom padding on reset/initial view
+const RESET_PADDING_FRACTION = 0.05;       // 5% pixel-fraction gap at top and bottom on reset
 const ZOOM_OUT_PADDING_FACTOR = 0.10;      // 10% zoom-out/pan headroom beyond data extent
 
-function computeResetView({ dynamicMinAge, dynamicMaxAge, layout, viewportWidth }) {
-  const span = dynamicMaxAge - dynamicMinAge;
-  const paddedMin = dynamicMinAge;
-  const paddedMax = dynamicMaxAge + span * RESET_DOMAIN_PADDING_FACTOR;
+function computeResetView({
+  dynamicMinAge, dynamicMaxAge, layout, viewportWidth,
+  scaleType, effectiveUnits, equalSizeLevel, eM, viewH,
+}) {
   const totalColumnsWidth = layout[layout.length - 1]?.end ?? 0;
   const centeredLateral = Math.max(0, (viewportWidth - totalColumnsWidth) / 2);
+
+  // Build a temporary scale mapping the full data extent to the drawing area,
+  // then invert padded pixel positions to find the padded age bounds.
+  // This produces a visible pixel gap for every scale type (not just linear).
+  const drawingH = Math.max(1, viewH - eM);
+  const padPx = RESET_PADDING_FRACTION * drawingH;
+  const padTopY = eM - padPx;
+  const padBotY = viewH + padPx;
+
+  const { toAge } = makeScale({
+    scaleType,
+    vMin: dynamicMinAge, vMax: dynamicMaxAge,
+    fullMin: dynamicMinAge, fullMax: dynamicMaxAge,
+    eM, viewH,
+    units: effectiveUnits, equalSizeLevel,
+  });
+
+  const paddedMinRaw = toAge(padTopY);
+  const paddedMaxRaw = toAge(padBotY);
+
+  // Safety clamp: keep reset view inside the navigable range.
+  const span = dynamicMaxAge - dynamicMinAge;
+  const clampMin = dynamicMinAge - span * 0.10;
+  const clampMax = dynamicMaxAge + span * 0.10;
+  const paddedMin = Math.max(clampMin, paddedMinRaw);
+  const paddedMax = Math.min(clampMax, paddedMaxRaw);
+
   return { paddedMin, paddedMax, centeredLateral };
 }
 
@@ -233,6 +260,9 @@ function App() {
     const { paddedMin, paddedMax, centeredLateral } = computeResetView({
       dynamicMinAge, dynamicMaxAge, layout,
       viewportWidth: scrollContainerRef.current?.clientWidth ?? 0,
+      scaleType, effectiveUnits, equalSizeLevel,
+      eM: effectiveMarginRef.current,
+      viewH: scrollContainerRef.current?.clientHeight ?? 800,
     });
     visibleDomainRef.current = [paddedMin, paddedMax];
     setVisibleDomain([paddedMin, paddedMax]);
@@ -551,6 +581,9 @@ function App() {
     const { paddedMin, paddedMax, centeredLateral } = computeResetView({
       dynamicMinAge, dynamicMaxAge, layout,
       viewportWidth: scrollContainerRef.current?.clientWidth ?? 0,
+      scaleType, effectiveUnits, equalSizeLevel,
+      eM: effectiveMarginRef.current,
+      viewH: scrollContainerRef.current?.clientHeight ?? 800,
     });
     visibleDomainRef.current = [paddedMin, paddedMax];
     setVisibleDomain([paddedMin, paddedMax]);
@@ -636,6 +669,9 @@ function App() {
     const { paddedMin, paddedMax, centeredLateral } = computeResetView({
       dynamicMinAge, dynamicMaxAge, layout,
       viewportWidth: scrollContainerRef.current?.clientWidth ?? 0,
+      scaleType, effectiveUnits, equalSizeLevel,
+      eM: effectiveMarginRef.current,
+      viewH: scrollContainerRef.current?.clientHeight ?? 800,
     });
     visibleDomainRef.current = [paddedMin, paddedMax];
     setVisibleDomain([paddedMin, paddedMax]);

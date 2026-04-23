@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-23 (session 12)*
+*Last Updated: 2026-04-23 (session 13)*
 
 ------------------------------------------------------------------------
 
@@ -10,7 +10,36 @@ Canvas (dynamic) is now the **only** rendering pipeline. ICS 2024/12 data
 (189 units). Single-mode renderer with `makeScale` everywhere. Custom
 scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
-zoom-out headroom wired correctly in Session 12.
+zoom-out headroom wired correctly in Session 12. Reset padding moved to
+viewport-pixel-fraction space in Session 13.
+
+**Session 13 — Viewport-fraction reset padding.**
+All changes are in `src/App.jsx` (`computeResetView`) and `eslint.config.js`.
+
+- **Reset padding is now scale-aware**: previously `computeResetView` added
+  `2% * span` to the age domain, which produced no visible pixel gap on
+  non-linear scales (log, equalSize, eraEqual) because the scale clamps
+  out-of-bounds ages to `range[1]`. The new approach builds a temporary
+  `makeScale` over the full data extent, then inverts padded pixel positions
+  (`eM ± 5% drawingH` and `viewH ± 5% drawingH`) through `toAge` to find
+  the padded age bounds. This produces a 5% pixel-fraction gap at top and
+  bottom for every scale type.
+- **Padding applies only at reset**: during pan/zoom the drawing area fills
+  completely. Reset (button, hidden-units change, initial mount) re-applies
+  the 5% padding.
+- **Constant renamed**: `RESET_DOMAIN_PADDING_FACTOR = 0.02` →
+  `RESET_PADDING_FRACTION = 0.05`. All three call sites updated with the
+  new `scaleType`, `effectiveUnits`, `equalSizeLevel`, `eM`, `viewH`
+  parameters.
+- **Safety clamp added**: the padded bounds are clamped to ±10% of data
+  span so extreme scale types can never push the reset view beyond the
+  navigable range.
+- **ESLint ignore for `.claude/` worktrees**: stale worktree files from
+  prior agent runs were being linted. Added `.claude` to `globalIgnores`
+  in `eslint.config.js`.
+- Known issue A1 (bottom padding missing on non-linear modes) — **RESOLVED**.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 12 — Scrollbar live-update + zoom-out headroom.**
 All changes are in `src/components/TimelineCanvas.jsx` event handlers.
@@ -447,12 +476,17 @@ All UI preferences in `gt_prefs`; unit edits in `gt_unitEdits`.
 -   Track click: pages 90% of visible span up or down.
 -   Track height measured via `ResizeObserver` (not ref reads during render).
 
-## ✅ Initial View Centering + Bottom Padding
+## ✅ Initial View Centering + Pixel-Fraction Reset Padding
 
--   `computeResetView` helper computes padded domain (`+2% span` at
-    bottom) and centered `lateralOffset` based on viewport width.
+-   `computeResetView` helper computes a 5% pixel-fraction gap at top
+    and bottom of the drawing area and a centered `lateralOffset`.
+-   Padding is scale-aware: builds a temporary `makeScale` over the
+    full data extent, then inverts padded pixel positions through `toAge`
+    to find the padded age bounds. Works correctly for linear, log,
+    equalSize, and eraEqual.
 -   Applied once on mount (guarded by `hasInitializedView` ref).
--   Applied on Reset and on hidden-units change.
+-   Applied on Reset button and on hidden-units change.
+-   Padding is reset-only — during pan/zoom the drawing area fills completely.
 
 ## ✅ Zoom-out Headroom
 
@@ -671,6 +705,14 @@ These remain load-bearing for the canvas-only renderer:
     `dynamicMaxAgeRef` to cap zoom-out at the true data extent. The two
     must never be swapped for `makeScale` — tick generation always uses
     the true extent regardless.
+27. Pixel-fraction padding at reset is computed by inverting pixel bounds
+    through `makeScale`'s `toAge`. Build a temporary `makeScale` over
+    `[dynamicMinAge, dynamicMaxAge]` with those as both `vMin/vMax` and
+    `fullMin/fullMax`, then call `toAge(eM - padPx)` and `toAge(viewH + padPx)`.
+    This produces a visible pixel gap uniformly across all scale types
+    without changing the scale API. Age-domain padding (`vMax + 2% * span`)
+    doesn't work for non-linear scales because they clamp out-of-bounds ages
+    to `range[1]`, collapsing gSpan and blowing up virtualH.
 
 ## Historical (Transform Mode — REMOVED in Session 9)
 
@@ -774,18 +816,16 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Canvas-only renderer. Sessions 10–12 added custom scrollbar,
-initial view centering, zoom-out headroom, and two targeted fixes in S12:
-(1) scrollbar thumb now updates live during ctrl+wheel zoom and drag pan
-(both paths route through `commitDomain`); (2) ctrl+wheel zoom-out now
-uses `clampMinAgeRef`/`clampMaxAgeRef` as `fullMin`/`fullMax` in
-`zoomToFocal`, matching the pan clamp boundary (10% headroom).
-App.jsx ~1630 lines. Test count 44 / 44. Lint 0 / 0.
+GeoTimeline — Canvas-only renderer. Sessions 10–13 added custom scrollbar,
+initial view centering, zoom-out headroom, scrollbar live-update fixes (S12),
+and scale-aware reset padding (S13). Reset now shows a 5% pixel-fraction gap
+at top and bottom for ALL scale types (linear, log, equalSize, eraEqual).
+App.jsx ~1650 lines. Test count 44 / 44. Lint 0 / 0.
 
 Stack: React 19 + D3 v7 + Vite + Vitest. Geologic timescale visualizer.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).
 
-**Sessions 7–12 changes are NOT browser-verified** — user was remote.
+**Sessions 7–13 changes are NOT browser-verified** — user was remote.
 See the "Pending Browser Verification" section in PROJECT_STATE.md for
 the full checklist. Prompt the user to run through it before starting
 new work.
@@ -846,10 +886,12 @@ Architecture constraints (never break):
   loop. Track height tracked via ResizeObserver (not ref reads during render).
 - URL hash encodes only `visibleDomain` and `lateralOffset`. `hiddenUnits`
   restored from localStorage only.
-- `computeResetView({ dynamicMinAge, dynamicMaxAge, layout, viewportWidth })`
-  computes padded domain (+2% at bottom) and centered lateralOffset. Call
-  it in: mount effect (guarded by `hasInitializedView`), `handleResetZoom`,
-  and the hidden-units reset effect.
+- `computeResetView({ dynamicMinAge, dynamicMaxAge, layout, viewportWidth,
+  scaleType, effectiveUnits, equalSizeLevel, eM, viewH })` computes a 5%
+  pixel-fraction gap at top and bottom (scale-aware via `makeScale`/`toAge`)
+  and a centered `lateralOffset`. Call it in: mount effect (guarded by
+  `hasInitializedView`), `handleResetZoom`, and the hidden-units reset effect.
+  `RESET_PADDING_FRACTION = 0.05`; `RESET_DOMAIN_PADDING_FACTOR` is removed.
 
 Lint baseline: 0 errors / 0 warnings. Keep it that way.
 
