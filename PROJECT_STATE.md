@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-24 (session 16)*
+*Last Updated: 2026-04-24 (session 17)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,13 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 17 — Two follow-up fixes to domain/picks.**
+
+- **Auto-reset now fires on `columnConfig` changes**: the hidden-units reset `useEffect` in `App.jsx` had `[hiddenUnits]` as its dependency array. Toggling a column on/off changes `columnConfig → visibleLevels → dynamicMinAge/dynamicMaxAge` but the viewport never refitted. Added `columnConfig` to the dep array: `[hiddenUnits, columnConfig]`.
+- **Picks now include orphaned tops**: when units are hidden in the middle of the visible range, some visible units have a `.end` age that is not the `.start` of any other visible unit — so no pick appeared at their top boundary. After `boundaryMap` is built from `candidateLevels`, a second pass now computes the set of all `.start` ages already covered, then adds a pick at `u.end` for any visible unit whose top is not already covered. Applied identically in `TimelineCanvas.jsx` (canvas picks) and `buildSVGForExport()` in `App.jsx` (SVG export picks). The `dynamicMinAge` fallback is retained as a safety net.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 16 — UI polish pass (Option A: semantic CSS classes in src/styles/ui.css).**
 All changes are visual only; no canvas, scale, or state logic was modified.

@@ -460,6 +460,21 @@ function App() {
                 boundaryMap.set(u.start, { uncertainty: u.startUncertainty ?? null, approximate: u.startApproximate ?? false });
             });
         });
+        const coveredStarts = new Set(boundaryMap.keys());
+        candidateLevels.forEach(level => {
+          allUnits
+            .filter(u =>
+              u.levelOrder === level &&
+              u.start !== null &&
+              isUnitVisible(u.id, hiddenUnits)
+            )
+            .forEach(u => {
+              const topAge = u.end ?? 0;
+              if (!coveredStarts.has(topAge) && !boundaryMap.has(topAge)) {
+                boundaryMap.set(topAge, { uncertainty: null, approximate: false });
+              }
+            });
+        });
         boundaryMap.forEach(({ uncertainty, approximate }, age) => boundaryAges.push({ age, uncertainty, approximate }));
       }
       if (!boundaryAges.some(b => b.age === dynamicMinAge)) boundaryAges.push({ age: dynamicMinAge, uncertainty: null, approximate: false });
@@ -597,7 +612,7 @@ function App() {
     lateralOffsetRef.current = centeredLateral;
     setLateralOffset(centeredLateral);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hiddenUnits]);
+  }, [hiddenUnits, columnConfig]);
 
   const [picksMode, setPicksMode] = useState(() => _initPrefs.picksMode ?? "auto");
 // "auto" | "adaptive" | "manual"

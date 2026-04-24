@@ -341,6 +341,21 @@ export default function TimelineCanvas({
                 }
               });
           });
+          const coveredStarts = new Set(boundaryMap.keys());
+          candidateLevels.forEach(level => {
+            allUnits
+              .filter(u =>
+                u.levelOrder === level &&
+                u.start !== null &&
+                isUnitVisible(u.id, hiddenUnits)
+              )
+              .forEach(u => {
+                const topAge = u.end ?? 0;
+                if (!coveredStarts.has(topAge) && !boundaryMap.has(topAge)) {
+                  boundaryMap.set(topAge, { uncertainty: null, approximate: false });
+                }
+              });
+          });
           boundaryMap.forEach(({ uncertainty, approximate }, age) => {
             boundaryAges.push({ age, uncertainty, approximate });
           });
