@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import * as d3 from "d3";
 
 import { computeFitAndWrap } from "../renderers/BlockRenderer";
 import {
@@ -223,32 +222,44 @@ export default function TimelineCanvas({
         ctx.fillStyle = "white";
         ctx.fillRect(timeColumn.start + lateral, eM, timeColumn.width, viewH - eM);
 
-        const tickValues = d3.scaleLinear().domain([vMin, vMax]).ticks(40);
-        if (tickValues.length) {
+        const unitTopY    = scale(dynamicMinAgeRef.current);
+        const unitBottomY = scale(dynamicMaxAgeRef.current);
+        {
           const tickSpan = vMax - vMin;
-          const tickStep = tickValues.length > 1
-            ? Math.abs(tickValues[1] - tickValues[0])
-            : Math.max(0.001, tickSpan / 20);
+          const targetLabels = Math.max(4, Math.floor((viewH - eM) / (fontSize * 5)));
+          const rawStep = tickSpan / targetLabels;
 
-          const targetLabels = Math.max(4, Math.floor((viewH - eM) / (fontSize * 2.5)));
-          const majorEvery   = Math.max(1, Math.round(tickValues.length / targetLabels));
-          const majorTicks   = tickValues.filter((_, i) => i % majorEvery === 0);
+          const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+          const normalized = rawStep / magnitude;
+          let niceStep;
+          if      (normalized < 1.5)  niceStep = 1    * magnitude;
+          else if (normalized < 2.25) niceStep = 2    * magnitude;
+          else if (normalized < 3.5)  niceStep = 2.5  * magnitude;
+          else if (normalized < 7.5)  niceStep = 5    * magnitude;
+          else                        niceStep = 10   * magnitude;
 
+          const tickStep = niceStep;
+
+          const firstMajor = Math.ceil(vMin / niceStep) * niceStep;
+          const majorTicks = [];
+          for (let age = firstMajor; age <= vMax; age += niceStep) {
+            majorTicks.push(Math.round(age / niceStep) * niceStep);
+          }
+
+          const minorStep = niceStep / 5;
+          const firstMinor = Math.ceil(vMin / minorStep) * minorStep;
           const minorTicks = [];
-          for (let i = 0; i < majorTicks.length - 1; i++) {
-            const a = majorTicks[i], b = majorTicks[i + 1];
-            const step = (b - a) / 5;
-            for (let j = 1; j < 5; j++) {
-              const age = a + j * step;
-              if (age >= vMin && age <= vMax) minorTicks.push(age);
-            }
+          for (let age = firstMinor; age <= vMax; age += minorStep) {
+            const snapped = Math.round(age / minorStep) * minorStep;
+            if (Math.abs(snapped / niceStep - Math.round(snapped / niceStep)) < 1e-9) continue;
+            minorTicks.push(snapped);
           }
 
           ctx.strokeStyle = "black";
           ctx.lineWidth = 0.7;
           minorTicks.forEach(age => {
             const pos = scale(age);
-            if (pos < eM - 2 || pos > viewH + 2) return;
+            if (pos < unitTopY - 0.5 || pos > unitBottomY + 0.5) return;
             const tx = timeColumn.end + lateral;
             ctx.beginPath();
             ctx.moveTo(tx - 5, pos);
@@ -264,7 +275,7 @@ export default function TimelineCanvas({
           ctx.lineWidth = 1;
           majorTicks.forEach(age => {
             const pos = scale(age);
-            if (pos < eM - 2 || pos > viewH + 2) return;
+            if (pos < unitTopY - 0.5 || pos > unitBottomY + 0.5) return;
             const tx = timeColumn.end + lateral;
             ctx.strokeStyle = "black";
             ctx.beginPath();

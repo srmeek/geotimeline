@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-23 (session 13)*
+*Last Updated: 2026-04-24 (session 15b)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,43 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 15 — Fixed-lattice span-based ticks for pan stability.**
+All changes are in `src/components/TimelineCanvas.jsx` (`drawFrame`, time axis block).
+
+- **Replaced D3-based tick generation with span-based fixed-lattice ticks**: removed
+  `d3.scaleLinear().domain([vMin, vMax]).ticks(40)` and the `majorEvery` derivation.
+  Tick positions are now multiples of a "nice" step size derived from the visible span,
+  so the same lattice of age values is always used — panning slides the visible window
+  over the fixed lattice rather than reshuffling label positions every frame.
+- **Nice step snapping**: raw step `= span / targetLabels` is snapped to the nearest
+  1, 2, 2.5, or 5 times a power of 10 (`niceStep`). Labels change only at zoom
+  transitions, not during pan.
+- **Minor ticks**: `niceStep / 5` (4 subdivisions), skipping positions coinciding with
+  major ticks via a floating-point proximity check.
+- **`d3` import removed**: `TimelineCanvas.jsx` no longer imports D3 at all.
+- Session 14 unit-bound culling (`unitTopY`/`unitBottomY`) and all rendering loops
+  are unchanged.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
+
+**Session 14 — Time axis tick clamping to unit bounds.**
+All changes are in `src/components/TimelineCanvas.jsx` (`drawFrame`, time axis block).
+
+- **Ticks now hard-clipped to the unit pixel range**: computed
+  `unitTopY = scale(dynamicMinAgeRef.current)` and
+  `unitBottomY = scale(dynamicMaxAgeRef.current)` immediately after
+  `tickValues` generation. Both the minor-tick and major-tick `forEach`
+  cull guards were replaced with
+  `if (pos < unitTopY - 0.5 || pos > unitBottomY + 0.5) return;`
+  (0.5 px tolerance avoids floating-point culling at exact boundaries).
+- **Applies everywhere**: reset padding gaps, pan/zoom positions, all
+  four scale types (linear, log, equalSize, eraEqual), and when units
+  are hidden (dynamicMinAge/MaxAge update via useMemo over hiddenUnits).
+- **Tick spacing unchanged**: `tickValues` domain is still `[vMin, vMax]`
+  so tick density tracks the visible age range; only rendering is clamped.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 13 — Viewport-fraction reset padding.**
 All changes are in `src/App.jsx` (`computeResetView`) and `eslint.config.js`.
@@ -403,8 +440,13 @@ Linear, Log, Equal Size (visible-only units), Era Equal.
 
 ## ✅ Time Axis Ticks
 
--   Always uses `d3.scaleLinear().ticks(40)` for regular intervals.
--   Adaptive major/minor tick density based on viewport height.
+-   Fixed-lattice ticks: step snapped to 1, 2, 2.5, or 5 × 10^n from span.
+-   Panning slides the view over the fixed lattice — no reshuffling during pan.
+-   Zoom transitions cleanly change the step size.
+-   4 minor subdivisions between major ticks (minorStep = niceStep / 5).
+-   Session 14 unit-bound culling still in effect.
+-   Tick density reduced 50%: `targetLabels` divisor changed from `fontSize * 2.5`
+    to `fontSize * 5` (doubles the pixel gap required per label).
 
 ## ✅ Text Wrapping + Auto-Shrink (`BlockRenderer.js`)
 
@@ -818,8 +860,9 @@ Paste this at the start of the next chat:
 
 GeoTimeline — Canvas-only renderer. Sessions 10–13 added custom scrollbar,
 initial view centering, zoom-out headroom, scrollbar live-update fixes (S12),
-and scale-aware reset padding (S13). Reset now shows a 5% pixel-fraction gap
-at top and bottom for ALL scale types (linear, log, equalSize, eraEqual).
+and scale-aware reset padding (S13). Session 14 clamped ticks to unit bounds.
+Session 15 replaced D3-based tick generation with span-based fixed-lattice ticks
+(pan-stable, no reshuffling during pan; D3 import removed from TimelineCanvas.jsx).
 App.jsx ~1650 lines. Test count 44 / 44. Lint 0 / 0.
 
 Stack: React 19 + D3 v7 + Vite + Vitest. Geologic timescale visualizer.
