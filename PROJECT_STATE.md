@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-24 (session 15b)*
+*Last Updated: 2026-04-24 (session 16)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,30 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 16 — UI polish pass (Option A: semantic CSS classes in src/styles/ui.css).**
+All changes are visual only; no canvas, scale, or state logic was modified.
+
+- **Inter Variable font**: added `@fontsource-variable/inter` dependency; imported in `src/main.jsx`. Font stack applied via `--gt-font-ui` CSS variable on `:root`.
+- **Design token system**: `src/index.css` rewritten — Vite boilerplate removed; full set of `--gt-*` CSS custom properties for surfaces, borders, text, accent, semantic, shadows, radii, and transitions.
+- **`src/styles/ui.css`** (new): semantic class definitions — `.gt-toolbar`, `.gt-btn`, `.gt-btn--toggle/active/danger`, `.gt-icon-btn`, `.gt-btn-close`, `.gt-segment`/`__btn`/`--active`, `.gt-status-strip`, `.gt-left-panel`, `.gt-section`/`-header`/`-content`, `.gt-chevron`, `.gt-col-row`, `.gt-right-panel`, `.gt-tab-bar/tab/tab--active`, `.gt-tab-content`, `.gt-card`/`__header`, `.gt-slider-row`/`-val`, `.gt-col-header-row`, `.gt-tooltip`/`__name`/`__strat`/`__rank`/`__age`, `.gt-scroll`.
+- **Custom form controls**: `input[type="range"].gt-range` (styled thumb/track), `select.gt-select`/`.gt-select--sm` (custom chevron, appearance:none), `input.gt-input` (height 26px, tabular-nums). All applied in `App.jsx`.
+- **Toolbar**: 44px height, warm off-white background, icon button for ☰, "GeoTimeline" wordmark, segmented controls for Ga/Ma/ka and scale type, dark-fill toggle style for GSSP/Settings/Editor buttons.
+- **Status strip**: 26px height, tabular-nums age range, CSS-variable separators.
+- **Left panel**: 248px wide, two collapsible sections ("Columns" and "Filter") with animated chevron. New state: `leftColumnsCollapsed` / `leftFilterCollapsed`, both persisted in `gt_prefs`. "Show All" button moved below the tree. Search input uses `.gt-input`.
+- **Right settings panel**: 308px wide, underline-style tab bar with accent border on active tab, card groups (`.gt-card`) for each settings section.
+- **labelOrientation**: upgraded from radio buttons to `.gt-segment` control.
+- **labelMode**: upgraded from radio buttons to `.gt-segment` control.
+- **GSSP "Markers" card**: added in Display tab — mirrors toolbar toggle (shared `showGSSP` state).
+- **Font Rules**: empty-state muted text when no rules; inputs use `.gt-input`; close buttons use `.gt-btn-close`.
+- **Picks tab**: stacked radio options with subtitle text; manual level select indented 28px.
+- **Export tab**: flat layout, full-width `.gt-btn` for each action; danger button for Reset All Edits.
+- **Tooltip**: dark `#1a1b1e` background, `.gt-radius-lg` corners, structured slots for name/strat/rank/age. `TOOLTIP_W=280`, `TOOLTIP_H=110`.
+- **Column header row**: uses `.gt-col-header-row` class — `var(--gt-bg-card)` background, `var(--gt-border)` bottom border, `var(--gt-shadow-sm)`.
+- **Data editor**: border/background/header updated to design tokens; search/rank select/close button use CSS classes; table header and edited cells use CSS variable colors.
+- **CustomScrollbar**: track transparent (10px wide), thumb 6px centered, `rgba(0,0,0,0.18)` default / `rgba(0,0,0,0.32)` hover / `var(--gt-accent)` drag.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 15 — Fixed-lattice span-based ticks for pan stability.**
 All changes are in `src/components/TimelineCanvas.jsx` (`drawFrame`, time axis block).

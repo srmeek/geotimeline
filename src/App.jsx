@@ -163,6 +163,8 @@ function App() {
 
   const [leftPanelOpen, setLeftPanelOpen] = useState(() => _initPrefs.leftPanelOpen ?? true);
   const [settingsOpen, setSettingsOpen] = useState(() => _initPrefs.settingsOpen ?? false);
+  const [leftColumnsCollapsed, setLeftColumnsCollapsed] = useState(() => _initPrefs.leftColumnsCollapsed ?? false);
+  const [leftFilterCollapsed, setLeftFilterCollapsed] = useState(() => _initPrefs.leftFilterCollapsed ?? false);
   const [settingsTab, setSettingsTab] = useState("display");
   const [unitSearch, setUnitSearch] = useState("");
 
@@ -734,9 +736,10 @@ function App() {
       hiddenUnits: [...hiddenUnits],
       headerHeight, headerFontSize,
       leftPanelOpen, settingsOpen,
+      leftColumnsCollapsed, leftFilterCollapsed,
     };
     localStorage.setItem("gt_prefs", JSON.stringify(prefs));
-  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, headerHeight, headerFontSize, leftPanelOpen, settingsOpen]);
+  }, [timeUnit, columnConfig, columnWidths, labelMode, contrastText, fontSize, fontFamily, labelOrientation, fontBold, fontItalic, fontUnderline, showGSSP, fontRules, scaleType, equalSizeLevel, picksMode, manualPicksLevel, showUncertainty, picksSigFigs, hiddenUnits, headerHeight, headerFontSize, leftPanelOpen, settingsOpen, leftColumnsCollapsed, leftFilterCollapsed]);
 
   useEffect(() => {
     localStorage.setItem("gt_unitEdits", JSON.stringify(unitEdits));
@@ -791,7 +794,7 @@ function App() {
               }}
               style={{ margin: "0 5px 0 0", flexShrink: 0 }}
             />
-            <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "#999" : "#000", whiteSpace: "nowrap" }}>
+            <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "var(--gt-text-disabled)" : "var(--gt-text-primary)", whiteSpace: "nowrap" }}>
               {unit.displayName}
             </span>
           </div>
@@ -812,47 +815,45 @@ function App() {
     }}>
 
       {/* Zone 1: Toolbar */}
-      <div style={{
-        height: 40,
-        display: "flex",
-        alignItems: "center",
-        padding: "0 8px",
-        borderBottom: "1px solid #ccc",
-        background: "#f8f8f8",
-        gap: 8,
-        flexShrink: 0,
-      }}>
+      <div className="gt-toolbar">
         <button
+          className={`gt-icon-btn${leftPanelOpen ? " gt-icon-btn--active" : ""}`}
           onClick={() => setLeftPanelOpen(v => !v)}
           title="Toggle panel"
-          style={{ fontSize: 16, padding: "2px 6px", border: "1px solid #ccc", background: leftPanelOpen ? "#ddd" : "#f5f5f5", cursor: "pointer", borderRadius: 3 }}
         >☰</button>
+        <div className="gt-toolbar-sep" />
+        <span className="gt-wordmark">GeoTimeline</span>
 
-        <button
-          onClick={handleResetZoom}
-          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: "#f5f5f5", cursor: "pointer", borderRadius: 3 }}
-        >Reset</button>
+        <button className="gt-btn" onClick={handleResetZoom}>Reset</button>
 
-        <div style={{ display: "flex", border: "1px solid #999", borderRadius: 4, overflow: "hidden" }}>
-          {["Ga","Ma","ka"].map((u, i) => (
-            <button key={u} onClick={() => setTimeUnit(u)}
-              style={{ padding: "2px 8px", fontSize: 11, border: "none", borderRight: i < 2 ? "1px solid #999" : "none", background: timeUnit === u ? "#555" : "#f5f5f5", color: timeUnit === u ? "white" : "#333", cursor: "pointer" }}
+        <div style={{ width: 8 }} />
+
+        <div className="gt-segment">
+          {["Ga","Ma","ka"].map(u => (
+            <button key={u}
+              className={`gt-segment__btn${timeUnit === u ? " gt-segment__btn--active" : ""}`}
+              onClick={() => setTimeUnit(u)}
             >{u}</button>
           ))}
         </div>
 
-        <div style={{ display: "flex", border: "1px solid #999", borderRadius: 4, overflow: "hidden" }}>
-          {[["linear","Linear"],["log","Log"],["equalSize","Equal"],["eraEqual","Era"]].map(([val,lbl], i, arr) => (
-            <button key={val} onClick={() => setScaleType(val)}
-              style={{ padding: "2px 8px", fontSize: 11, border: "none", borderRight: i < arr.length - 1 ? "1px solid #999" : "none", background: scaleType === val ? "#555" : "#f5f5f5", color: scaleType === val ? "white" : "#333", cursor: "pointer" }}
+        <div style={{ width: 6 }} />
+
+        <div className="gt-segment">
+          {[["linear","Linear"],["log","Log"],["equalSize","Equal"],["eraEqual","Era"]].map(([val,lbl]) => (
+            <button key={val}
+              className={`gt-segment__btn${scaleType === val ? " gt-segment__btn--active" : ""}`}
+              onClick={() => setScaleType(val)}
             >{lbl}</button>
           ))}
         </div>
+
         {scaleType === "equalSize" && (
           <select
             value={equalSizeLevel}
             onChange={e => setEqualSizeLevel(Number(e.target.value))}
-            style={{ fontSize: 11, padding: "1px 4px" }}
+            className="gt-select gt-select--sm"
+            style={{ marginLeft: 4 }}
           >
             {columnConfig.map(col => (
               <option key={col.level} value={col.level}>{col.label}</option>
@@ -863,46 +864,41 @@ function App() {
         <div style={{ flex: 1 }} />
 
         <button
+          className={`gt-btn gt-btn--toggle${showGSSP ? " gt-btn--active" : ""}`}
           onClick={() => setShowGSSP(v => !v)}
           title="GSSP markers"
-          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: showGSSP ? "#555" : "#f5f5f5", color: showGSSP ? "white" : "#333", cursor: "pointer", borderRadius: 3 }}
         >GSSP</button>
 
         <button
+          className={`gt-btn gt-btn--toggle${settingsOpen ? " gt-btn--active" : ""}`}
           onClick={() => setSettingsOpen(v => !v)}
           title="Settings"
-          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: settingsOpen ? "#555" : "#f5f5f5", color: settingsOpen ? "white" : "#333", cursor: "pointer", borderRadius: 3 }}
         >Settings</button>
 
         <button
+          className={`gt-btn gt-btn--toggle${showDataEditor ? " gt-btn--active" : ""}`}
           onClick={() => setShowDataEditor(v => !v)}
           title="Data editor"
-          style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ccc", background: showDataEditor ? "#555" : "#f5f5f5", color: showDataEditor ? "white" : "#333", cursor: "pointer", borderRadius: 3 }}
-        >⊞ Data</button>
+        >Editor</button>
       </div>
 
       {/* Zone 1: Status strip */}
-      <div style={{
-        height: 22,
-        display: "flex",
-        alignItems: "center",
-        padding: "0 10px",
-        borderBottom: "1px solid #e0e0e0",
-        background: "#fafafa",
-        fontSize: 11,
-        color: "#555",
-        flexShrink: 0,
-        gap: 16,
-      }}>
-        <span>
+      <div className="gt-status-strip">
+        <span className="gt-status-value">
           {timeUnit === "Ga"
             ? `${(visibleDomain[0]/1000).toFixed(3)}–${(visibleDomain[1]/1000).toFixed(3)} Ga`
             : timeUnit === "ka"
             ? `${(visibleDomain[0]*1000).toFixed(0)}–${(visibleDomain[1]*1000).toFixed(0)} ka`
             : `${visibleDomain[0].toFixed(2)}–${visibleDomain[1].toFixed(2)} Ma`}
         </span>
+        <div className="gt-status-sep" />
         <span>{columnConfig.filter(c => c.visible).length} columns visible</span>
-        {hiddenUnits.size > 0 && <span>{hiddenUnits.size} units hidden</span>}
+        {hiddenUnits.size > 0 && (
+          <>
+            <div className="gt-status-sep" />
+            <span>{hiddenUnits.size} units hidden</span>
+          </>
+        )}
       </div>
 
 
@@ -911,91 +907,109 @@ function App() {
 
       {/* Zone 2: Left Panel */}
       {leftPanelOpen && (
-        <div style={{
-          width: 220,
-          flexShrink: 0,
-          borderRight: "1px solid #ccc",
-          display: "flex",
-          flexDirection: "column",
-          background: "#fafafa",
-          overflow: "hidden",
-        }}>
+        <div className="gt-left-panel">
+
           {/* Columns section */}
-          <div style={{ padding: "6px 10px 4px", borderBottom: "1px solid #ddd", fontWeight: "bold", fontSize: 12 }}>Columns</div>
-          <div style={{ padding: "4px 10px 8px", borderBottom: "1px solid #ddd", overflowY: "auto" }}>
-            {columnConfig.map((col, index) => (
-              <div key={col.level} style={{ display: "flex", alignItems: "center", gap: 4, paddingTop: 3, paddingBottom: 3 }}>
-                <input
-                  type="checkbox"
-                  checked={col.visible}
-                  onChange={() => setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, visible: !c.visible } : c))}
-                />
-                <span style={{ flex: 1, fontSize: 11 }}>{col.label}</span>
-                <select
-                  value={col.orientation ?? "auto"}
-                  onChange={e => {
-                    const val = e.target.value === "auto" ? null : e.target.value;
-                    setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, orientation: val } : c));
-                  }}
-                  style={{ fontSize: 10, maxWidth: 68 }}
-                >
-                  <option value="auto">Auto</option>
-                  <option value="horizontal">Horiz</option>
-                  <option value="vertical">Vert</option>
-                </select>
-                <input
-                  type="number"
-                  min={5} max={32}
-                  value={col.fontSize ?? ""}
-                  placeholder={String(fontSize)}
-                  onChange={e => {
-                    const val = e.target.value === "" ? null : Number(e.target.value);
-                    setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, fontSize: val } : c));
-                  }}
-                  style={{ width: 32, fontSize: 10 }}
-                />
+          <div className="gt-section">
+            <button className="gt-section-header" onClick={() => setLeftColumnsCollapsed(v => !v)}>
+              <span className={`gt-chevron${leftColumnsCollapsed ? "" : " gt-chevron--open"}`}>▸</span>
+              Columns
+            </button>
+            {!leftColumnsCollapsed && (
+              <div className="gt-section-content gt-scroll">
+                {columnConfig.map((col, index) => (
+                  <div key={col.level} className="gt-col-row">
+                    <input
+                      type="checkbox"
+                      checked={col.visible}
+                      onChange={() => setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, visible: !c.visible } : c))}
+                    />
+                    <span style={{ flex: 1, fontSize: 11 }}>{col.label}</span>
+                    <select
+                      value={col.orientation ?? "auto"}
+                      onChange={e => {
+                        const val = e.target.value === "auto" ? null : e.target.value;
+                        setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, orientation: val } : c));
+                      }}
+                      className="gt-select gt-select--sm"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="horizontal">Horiz</option>
+                      <option value="vertical">Vert</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={5} max={32}
+                      value={col.fontSize ?? ""}
+                      placeholder={String(fontSize)}
+                      onChange={e => {
+                        const val = e.target.value === "" ? null : Number(e.target.value);
+                        setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, fontSize: val } : c));
+                      }}
+                      className="gt-input"
+                      style={{ width: 36 }}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
 
-          {/* Units section */}
-          <div style={{ padding: "6px 10px 4px", borderBottom: "1px solid #ddd", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-            <span style={{ fontWeight: "bold", fontSize: 12 }}>Units</span>
-            <button onClick={() => setHiddenUnits(new Set())} style={{ fontSize: 10, padding: "1px 6px" }}>Show All</button>
-          </div>
-          <div style={{ padding: "4px 8px", flexShrink: 0 }}>
-            <input
-              placeholder="Search units…"
-              value={unitSearch}
-              onChange={e => setUnitSearch(e.target.value)}
-              style={{ width: "100%", fontSize: 11, padding: "2px 6px", border: "1px solid #ccc", boxSizing: "border-box" }}
-            />
-          </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: "2px 8px 8px" }}>
-            {unitSearch
-              ? effectiveUnits
-                  .filter(u => u.levelOrder < 6 && u.start !== null && u.displayName.toLowerCase().includes(unitSearch.toLowerCase()))
-                  .sort((a, b) => b.start - a.start)
-                  .map(unit => {
-                    const isHidden = hiddenUnits.has(unit.id);
-                    const ancestorHidden = !isHidden && !isUnitVisible(unit.id, hiddenUnits);
-                    return (
-                      <div key={unit.id} style={{ display: "flex", alignItems: "center", paddingTop: 2, paddingBottom: 2, opacity: ancestorHidden ? 0.4 : 1 }}>
-                        <input
-                          type="checkbox"
-                          checked={!isHidden}
-                          disabled={ancestorHidden}
-                          onChange={() => setHiddenUnits(prev => { const next = new Set(prev); if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id); return next; })}
-                          style={{ margin: "0 5px 0 0", flexShrink: 0 }}
-                        />
-                        <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "#999" : "#000" }}>
-                          {unit.displayName}
-                        </span>
-                      </div>
-                    );
-                  })
-              : renderUnitTree(null, 0)
-            }
+          {/* Filter section */}
+          <div className="gt-section" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <button className="gt-section-header" onClick={() => setLeftFilterCollapsed(v => !v)}>
+              <span className={`gt-chevron${leftFilterCollapsed ? "" : " gt-chevron--open"}`}>▸</span>
+              Filter
+              {hiddenUnits.size > 0 && (
+                <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--gt-text-tertiary)", fontWeight: 400, letterSpacing: 0 }}>
+                  {hiddenUnits.size} hidden
+                </span>
+              )}
+            </button>
+            {!leftFilterCollapsed && (
+              <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+                <div style={{ padding: "6px 10px 4px", flexShrink: 0 }}>
+                  <input
+                    placeholder="Search units…"
+                    value={unitSearch}
+                    onChange={e => setUnitSearch(e.target.value)}
+                    className="gt-input"
+                    style={{ width: "100%" }}
+                  />
+                </div>
+                <div style={{ flex: 1, overflowY: "auto", padding: "2px 8px 8px" }} className="gt-scroll">
+                  {unitSearch
+                    ? effectiveUnits
+                        .filter(u => u.levelOrder < 6 && u.start !== null && u.displayName.toLowerCase().includes(unitSearch.toLowerCase()))
+                        .sort((a, b) => b.start - a.start)
+                        .map(unit => {
+                          const isHidden = hiddenUnits.has(unit.id);
+                          const ancestorHidden = !isHidden && !isUnitVisible(unit.id, hiddenUnits);
+                          return (
+                            <div key={unit.id} style={{ display: "flex", alignItems: "center", paddingTop: 2, paddingBottom: 2, opacity: ancestorHidden ? 0.4 : 1 }}>
+                              <input
+                                type="checkbox"
+                                checked={!isHidden}
+                                disabled={ancestorHidden}
+                                onChange={() => setHiddenUnits(prev => { const next = new Set(prev); if (next.has(unit.id)) next.delete(unit.id); else next.add(unit.id); return next; })}
+                                style={{ margin: "0 5px 0 0", flexShrink: 0 }}
+                              />
+                              <span style={{ fontSize: 11, textDecoration: isHidden ? "line-through" : "none", color: isHidden ? "var(--gt-text-disabled)" : "var(--gt-text-primary)" }}>
+                                {unit.displayName}
+                              </span>
+                            </div>
+                          );
+                        })
+                    : renderUnitTree(null, 0)
+                  }
+                </div>
+                {hiddenUnits.size > 0 && (
+                  <div style={{ padding: "0 10px 10px", flexShrink: 0 }}>
+                    <button className="gt-btn" style={{ width: "100%", justifyContent: "center" }} onClick={() => setHiddenUnits(new Set())}>Show All</button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1063,24 +1077,11 @@ function App() {
         {/* Column Headers */}
         {(() => {
           const tx = lateralOffset;
-          // Canvas for text measurement
           const _hc = document.createElement("canvas");
           const _hctx = _hc.getContext("2d");
           _hctx.font = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}${headerFontSize}px ${fontFamily}`;
           return (
-            <div style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              right: 0,
-              height: headerHeight,
-              pointerEvents: "auto",
-              zIndex: 10,
-              background: "white",
-              borderBottom: "1px solid black",
-              overflow: "hidden",
-              userSelect: "none",
-            }}>
+            <div className="gt-col-header-row" style={{ height: headerHeight }}>
               {layout.map((col, i) => {
                 const colW = col.width;
                 const name = getColDisplayName(col);
@@ -1102,8 +1103,8 @@ function App() {
                     fontStyle: fontItalic ? "italic" : "normal",
                     textDecoration: fontUnderline ? "underline" : "none",
                     overflow: "hidden",
-                    borderLeft: i === 0 ? "1px solid #ccc" : "none",
-                    borderRight: "1px solid #ccc",
+                    borderLeft: i === 0 ? "1px solid var(--gt-border-subtle)" : "none",
+                    borderRight: "1px solid var(--gt-border-subtle)",
                     boxSizing: "border-box",
                     pointerEvents: "none",
                   }}>
@@ -1260,37 +1261,38 @@ function App() {
           padding: "4px 6px",
           textAlign: "left",
           fontSize: 11,
-          fontWeight: "bold",
-          background: "#f0f0f0",
-          borderBottom: "2px solid #ccc",
+          fontWeight: 600,
+          background: "var(--gt-bg-panel)",
+          borderBottom: "1px solid var(--gt-border)",
           cursor: "pointer",
           userSelect: "none",
           whiteSpace: "nowrap",
           position: "sticky",
           top: 0,
           zIndex: 1,
+          color: "var(--gt-text-secondary)",
         });
 
         const tdStyle = (edited) => ({
           padding: "2px 6px",
           fontSize: 11,
-          borderBottom: "1px solid #eee",
+          borderBottom: "1px solid var(--gt-border-subtle)",
           cursor: "text",
           whiteSpace: "nowrap",
           maxWidth: 0,
           overflow: "hidden",
           textOverflow: "ellipsis",
-          background: edited ? "#fffbe6" : "white",
+          background: edited ? "var(--gt-warning-bg)" : "var(--gt-bg-card)",
         });
 
         return (
           <div style={{
             width: editorWidth,
             flexShrink: 0,
-            borderLeft: "2px solid #ccc",
+            borderLeft: "1px solid var(--gt-border-subtle)",
             display: "flex",
             flexDirection: "column",
-            background: "white",
+            background: "var(--gt-bg-card)",
             overflow: "hidden",
             position: "relative",
           }}>
@@ -1322,31 +1324,32 @@ function App() {
               }}
             />
             {/* Sidebar header */}
-            <div style={{ padding: "8px 10px", borderBottom: "1px solid #ccc", background: "#f8f8f8", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--gt-border-subtle)", background: "var(--gt-bg-panel)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 13, marginRight: 4 }}>Data Editor</strong>
               <input
                 placeholder="Search name / id…"
                 value={editorSearch}
                 onChange={e => setEditorSearch(e.target.value)}
-                style={{ fontSize: 11, padding: "2px 6px", border: "1px solid #ccc", width: 150 }}
+                className="gt-input"
+                style={{ width: 150 }}
               />
               <select
                 value={editorRankFilter}
                 onChange={e => setEditorRankFilter(e.target.value)}
-                style={{ fontSize: 11, padding: "2px 4px" }}
+                className="gt-select gt-select--sm"
               >
                 <option value="all">All Ranks</option>
                 {allRanks.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
-              <span style={{ fontSize: 11, color: "#666", marginLeft: "auto" }}>{rows.length} units</span>
+              <span style={{ fontSize: 11, color: "var(--gt-text-secondary)", marginLeft: "auto" }}>{rows.length} units</span>
               <button
                 onClick={() => setShowDataEditor(false)}
-                style={{ padding: "2px 8px", fontSize: 12, cursor: "pointer" }}
+                className="gt-btn-close"
               >✕</button>
             </div>
 
             {/* Table */}
-            <div style={{ overflowY: "auto", flex: 1 }}>
+            <div style={{ overflowY: "auto", flex: 1 }} className="gt-scroll">
               <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed" }}>
                 <colgroup>
                   {EDITOR_COLS.map(c => <col key={c.key} style={{ width: c.width }} />)}
@@ -1371,7 +1374,7 @@ function App() {
                   {rows.map(unit => {
                     const edited = unitEdits[unit.id] || {};
                     return (
-                      <tr key={unit.id} style={{ background: Object.keys(edited).length > 0 ? "#fffbe6" : "white" }}>
+                      <tr key={unit.id} style={{ background: Object.keys(edited).length > 0 ? "var(--gt-warning-bg)" : "var(--gt-bg-card)" }}>
                         {EDITOR_COLS.map(col => {
                           const isEditing = editingCell?.id === unit.id && editingCell?.field === col.key;
                           const value = unit[col.key];
@@ -1427,7 +1430,8 @@ function App() {
                                     if (e.key === "Escape") setEditingCell(null);
                                     if (e.key === "Tab") { commitEdit(); }
                                   }}
-                                  style={{ width: "100%", fontSize: 11, padding: "1px 4px", boxSizing: "border-box" }}
+                                  className="gt-input"
+                                  style={{ width: "100%", boxSizing: "border-box" }}
                                 />
                               </td>
                             );
@@ -1456,153 +1460,185 @@ function App() {
 
       {/* Zone 3: Right Settings Panel */}
       {settingsOpen && (
-        <div style={{
-          width: 280,
-          flexShrink: 0,
-          borderLeft: "1px solid #ccc",
-          display: "flex",
-          flexDirection: "column",
-          background: "#fafafa",
-          overflow: "hidden",
-        }}>
-          {/* Mini-tab bar */}
-          <div style={{ display: "flex", borderBottom: "1px solid #ccc", background: "#f0f0f0", flexShrink: 0 }}>
+        <div className="gt-right-panel">
+          {/* Tab bar */}
+          <div className="gt-tab-bar">
             {["display","picks","export"].map(tab => (
               <button
                 key={tab}
+                className={`gt-tab${settingsTab === tab ? " gt-tab--active" : ""}`}
                 onClick={() => setSettingsTab(tab)}
-                style={{
-                  flex: 1,
-                  padding: "6px 4px",
-                  fontSize: 11,
-                  border: "none",
-                  borderBottom: settingsTab === tab ? "2px solid #333" : "2px solid transparent",
-                  background: settingsTab === tab ? "white" : "transparent",
-                  cursor: "pointer",
-                  fontWeight: settingsTab === tab ? "bold" : "normal",
-                }}
               >{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>
             ))}
           </div>
 
           {/* Tab content */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "8px 10px", fontSize: 12 }}>
+          <div className="gt-tab-content gt-scroll">
             {settingsTab === "display" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div>
-                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Column Headers</div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-                    Height:
-                    <input type="range" min="24" max="80" value={headerHeight} onChange={e => setHeaderHeight(Number(e.target.value))} style={{ flex: 1 }} />
-                    {headerHeight}px
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginTop: 4 }}>
-                    Font:
-                    <input type="range" min="8" max="22" value={headerFontSize} onChange={e => setHeaderFontSize(Number(e.target.value))} style={{ flex: 1 }} />
-                    {headerFontSize}px
-                  </label>
-                </div>
-                <div>
-                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Block Text</div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-                    Size:
-                    <input type="range" min="6" max="16" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} style={{ flex: 1 }} />
-                    {fontSize}px
-                  </label>
-                  <div style={{ marginTop: 4 }}>
-                    <select value={fontFamily} onChange={e => setFontFamily(e.target.value)} style={{ fontSize: 11, width: "100%" }}>
-                      <option value="Arial, sans-serif">Arial</option>
-                      <option value="'Times New Roman', serif">Times New Roman</option>
-                      <option value="'Courier New', monospace">Courier New</option>
-                      <option value="Georgia, serif">Georgia</option>
-                      <option value="Verdana, sans-serif">Verdana</option>
-                    </select>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                    <label style={{ fontSize: 11 }}><input type="checkbox" checked={fontBold} onChange={e => setFontBold(e.target.checked)} /> Bold</label>
-                    <label style={{ fontSize: 11 }}><input type="checkbox" checked={fontItalic} onChange={e => setFontItalic(e.target.checked)} /> Italic</label>
-                    <label style={{ fontSize: 11 }}><input type="checkbox" checked={fontUnderline} onChange={e => setFontUnderline(e.target.checked)} /> Underline</label>
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Labels</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {["horizontal","vertical"].map(o => (
-                      <label key={o} style={{ fontSize: 11 }}>
-                        <input type="radio" name="labelOrientation" value={o} checked={labelOrientation === o} onChange={() => setLabelOrientation(o)} />
-                        {" "}{o.charAt(0).toUpperCase() + o.slice(1)}
-                      </label>
-                    ))}
-                  </div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, marginTop: 4 }}>
-                    <input type="checkbox" checked={contrastText} onChange={e => setContrastText(e.target.checked)} />
-                    Auto contrast
-                  </label>
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 10, color: "#666", marginBottom: 3 }}>Unit naming</div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {[["timescale","Time"],["stratigraphic","Strat"],["both","Both"]].map(([v,l]) => (
-                        <label key={v} style={{ fontSize: 11 }}>
-                          <input type="radio" name="labelMode" value={v} checked={labelMode === v} onChange={() => setLabelMode(v)} />
-                          {" "}{l}
-                        </label>
-                      ))}
+              <>
+                {/* Card: Column Headers */}
+                <div className="gt-card">
+                  <div className="gt-card__header">Column Headers</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div className="gt-slider-row">
+                      <span>Height</span>
+                      <input type="range" min="24" max="80" value={headerHeight} onChange={e => setHeaderHeight(Number(e.target.value))} className="gt-range" />
+                      <span className="gt-slider-val">{headerHeight}px</span>
+                    </div>
+                    <div className="gt-slider-row">
+                      <span>Font size</span>
+                      <input type="range" min="8" max="22" value={headerFontSize} onChange={e => setHeaderFontSize(Number(e.target.value))} className="gt-range" />
+                      <span className="gt-slider-val">{headerFontSize}px</span>
                     </div>
                   </div>
                 </div>
+
+                {/* Card: Block Text */}
+                <div className="gt-card">
+                  <div className="gt-card__header">Block Text</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div className="gt-slider-row">
+                      <span>Size</span>
+                      <input type="range" min="6" max="16" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} className="gt-range" />
+                      <span className="gt-slider-val">{fontSize}px</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: "var(--gt-text-secondary)", fontSize: 11, minWidth: 52 }}>Family</span>
+                      <select value={fontFamily} onChange={e => setFontFamily(e.target.value)} className="gt-select" style={{ flex: 1 }}>
+                        <option value="Arial, sans-serif">Arial</option>
+                        <option value="'Times New Roman', serif">Times New Roman</option>
+                        <option value="'Courier New', monospace">Courier New</option>
+                        <option value="Georgia, serif">Georgia</option>
+                        <option value="Verdana, sans-serif">Verdana</option>
+                      </select>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                      <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+                        <input type="checkbox" checked={fontBold} onChange={e => setFontBold(e.target.checked)} /> Bold
+                      </label>
+                      <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+                        <input type="checkbox" checked={fontItalic} onChange={e => setFontItalic(e.target.checked)} /> Italic
+                      </label>
+                      <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+                        <input type="checkbox" checked={fontUnderline} onChange={e => setFontUnderline(e.target.checked)} /> Underline
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: "var(--gt-text-secondary)", fontSize: 11, minWidth: 52 }}>Orient.</span>
+                      <div className="gt-segment" style={{ flex: 1 }}>
+                        {["horizontal","vertical"].map(o => (
+                          <button key={o}
+                            className={`gt-segment__btn${labelOrientation === o ? " gt-segment__btn--active" : ""}`}
+                            onClick={() => setLabelOrientation(o)}
+                            style={{ flex: 1 }}
+                          >{o.charAt(0).toUpperCase() + o.slice(1)}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: "var(--gt-text-secondary)", fontSize: 11, minWidth: 52 }}>Naming</span>
+                      <div className="gt-segment" style={{ flex: 1 }}>
+                        {[["timescale","Time"],["stratigraphic","Strat"],["both","Both"]].map(([v,l]) => (
+                          <button key={v}
+                            className={`gt-segment__btn${labelMode === v ? " gt-segment__btn--active" : ""}`}
+                            onClick={() => setLabelMode(v)}
+                            style={{ flex: 1 }}
+                          >{l}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="checkbox" checked={contrastText} onChange={e => setContrastText(e.target.checked)} />
+                      Auto contrast
+                    </label>
+                  </div>
+                </div>
+
+                {/* Card: Markers */}
+                <div className="gt-card">
+                  <div className="gt-card__header">Markers</div>
+                  <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="checkbox" checked={showGSSP} onChange={e => setShowGSSP(e.target.checked)} />
+                    Show GSSP / GSSA markers
+                  </label>
+                </div>
+
+                {/* Card: Font Rules */}
+                <div className="gt-card">
+                  <div className="gt-card__header">Font Rules</div>
+                  {fontRules.length === 0 ? (
+                    <p style={{ fontSize: 11, color: "var(--gt-text-tertiary)", margin: 0, padding: "8px 0", lineHeight: 1.5 }}>
+                      No font rules. Add one to override block text size in a given age range.
+                    </p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 6 }}>
+                      {fontRules.map(rule => (
+                        <div key={rule.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <input type="number" value={rule.minAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, minAge: Number(e.target.value) } : r))} className="gt-input" style={{ width: 54 }} placeholder="Min" />
+                          <span style={{ color: "var(--gt-text-tertiary)" }}>–</span>
+                          <input type="number" value={rule.maxAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, maxAge: Number(e.target.value) } : r))} className="gt-input" style={{ width: 54 }} placeholder="Max" />
+                          <span style={{ color: "var(--gt-text-tertiary)", fontSize: 11 }}>Ma</span>
+                          <input type="number" value={rule.fontSize} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, fontSize: Number(e.target.value) } : r))} className="gt-input" style={{ width: 42 }} min={5} max={32} />
+                          <button onClick={() => setFontRules(fontRules.filter(r => r.id !== rule.id))} className="gt-btn-close">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setFontRules([...fontRules, { id: String(Date.now()), minAge: 0, maxAge: 66, fontSize: fontSize }])}
+                    className="gt-btn"
+                    style={{ alignSelf: "flex-start" }}
+                  >+ Add Rule</button>
+                </div>
+
+                {/* Card: Equal-Size Level (conditional) */}
                 {scaleType === "equalSize" && (
-                  <div>
-                    <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Equal Size Level</div>
-                    <select value={equalSizeLevel} onChange={e => setEqualSizeLevel(Number(e.target.value))} style={{ fontSize: 11, width: "100%" }}>
+                  <div className="gt-card">
+                    <div className="gt-card__header">Equal-Size Level</div>
+                    <select value={equalSizeLevel} onChange={e => setEqualSizeLevel(Number(e.target.value))} className="gt-select" style={{ width: "100%" }}>
                       {columnConfig.map(col => (
                         <option key={col.level} value={col.level}>{col.label}</option>
                       ))}
                     </select>
                   </div>
                 )}
-                <div>
-                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Font Size Rules (by age)</div>
-                  {fontRules.map(rule => (
-                    <div key={rule.id} style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 4, fontSize: 11 }}>
-                      <input type="number" value={rule.minAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, minAge: Number(e.target.value) } : r))} style={{ width: 50 }} placeholder="Min" />
-                      <span>–</span>
-                      <input type="number" value={rule.maxAge} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, maxAge: Number(e.target.value) } : r))} style={{ width: 50 }} placeholder="Max" />
-                      <span>Ma</span>
-                      <input type="number" value={rule.fontSize} onChange={e => setFontRules(fontRules.map(r => r.id === rule.id ? { ...r, fontSize: Number(e.target.value) } : r))} style={{ width: 34 }} min={5} max={32} />
-                      <button onClick={() => setFontRules(fontRules.filter(r => r.id !== rule.id))} style={{ fontSize: 10, padding: "1px 4px" }}>✕</button>
-                    </div>
-                  ))}
-                  <button
-                    onClick={() => setFontRules([...fontRules, { id: String(Date.now()), minAge: 0, maxAge: 66, fontSize: fontSize }])}
-                    style={{ fontSize: 11, padding: "2px 8px", marginTop: 2 }}
-                  >+ Add Rule</button>
-                </div>
-              </div>
+              </>
             )}
 
             {settingsTab === "picks" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div>
-                  <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 6 }}>Boundary Mode</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <label style={{ fontSize: 11 }}>
-                      <input type="radio" name="picksMode" value="auto" checked={picksMode === "auto"} onChange={() => setPicksMode("auto")} />
-                      {" "}Auto (deepest visible)
-                    </label>
-                    <label style={{ fontSize: 11 }}>
-                      <input type="radio" name="picksMode" value="adaptive" checked={picksMode === "adaptive"} onChange={() => setPicksMode("adaptive")} />
-                      {" "}Adaptive (zoom-aware rank)
-                    </label>
-                    <label style={{ fontSize: 11 }}>
-                      <input type="radio" name="picksMode" value="manual" checked={picksMode === "manual"} onChange={() => setPicksMode("manual")} />
-                      {" "}Manual
-                    </label>
+              <>
+                {/* Card: Boundary Mode */}
+                <div className="gt-card">
+                  <div className="gt-card__header">Boundary Mode</div>
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    {[
+                      ["auto", "Auto", "deepest visible unit"],
+                      ["adaptive", "Adaptive", "zoom-aware rank"],
+                      ["manual", "Manual", "choose rank level"],
+                    ].map(([val, label, sub]) => (
+                      <label key={val} style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 10,
+                        padding: "6px 4px",
+                        borderRadius: "var(--gt-radius-sm)",
+                        cursor: "pointer",
+                        background: picksMode === val ? "var(--gt-bg-hover)" : "transparent",
+                      }}>
+                        <input type="radio" name="picksMode" value={val} checked={picksMode === val} onChange={() => setPicksMode(val)} style={{ marginTop: 2, flexShrink: 0 }} />
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: picksMode === val ? 500 : 400 }}>{label}</div>
+                          <div style={{ fontSize: 10, color: "var(--gt-text-tertiary)", marginTop: 1 }}>{sub}</div>
+                        </div>
+                      </label>
+                    ))}
                   </div>
                   {picksMode === "manual" && (
                     <select
                       value={manualPicksLevel ?? ""}
                       onChange={e => setManualPicksLevel(e.target.value === "" ? null : Number(e.target.value))}
-                      style={{ fontSize: 11, marginTop: 6, width: "100%" }}
+                      className="gt-select"
+                      style={{ marginTop: 6, marginLeft: 28, width: "calc(100% - 28px)" }}
                     >
                       <option value="">Select Level</option>
                       {columnConfig.map(col => (
@@ -1611,34 +1647,44 @@ function App() {
                     </select>
                   )}
                 </div>
-                <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
-                  <input type="checkbox" checked={showUncertainty} onChange={e => setShowUncertainty(e.target.checked)} />
-                  Show uncertainty
-                </label>
-                <label style={{ fontSize: 11 }}>
-                  Significant figures:
-                  <select value={picksSigFigs} onChange={e => setPicksSigFigs(Number(e.target.value))} style={{ marginLeft: 6, fontSize: 11 }}>
-                    {[3,4,5,6].map(n => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </label>
-              </div>
+
+                {/* Card: Display */}
+                <div className="gt-card">
+                  <div className="gt-card__header">Display</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="checkbox" checked={showUncertainty} onChange={e => setShowUncertainty(e.target.checked)} />
+                      Show uncertainty (±)
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: "var(--gt-text-secondary)", fontSize: 11, flex: 1 }}>Significant figures</span>
+                      <select value={picksSigFigs} onChange={e => setPicksSigFigs(Number(e.target.value))} className="gt-select gt-select--sm">
+                        {[3,4,5,6].map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </>
             )}
 
             {settingsTab === "export" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <button onClick={handleExportSVG} style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>Download SVG</button>
-                <button onClick={handleExportPNG} style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>Download PNG</button>
-                <button onClick={handleCopyPNG} style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>Copy PNG to Clipboard</button>
-                <hr style={{ border: "none", borderTop: "1px solid #ddd", margin: "4px 0" }} />
-                <div style={{ fontWeight: "bold", fontSize: 11, marginBottom: 4 }}>Data Edits</div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <div className="gt-card__header" style={{ marginBottom: 8 }}>Export Image</div>
+                <button onClick={handleExportSVG} className="gt-btn" style={{ width: "100%", justifyContent: "center", marginBottom: 6 }}>Download SVG</button>
+                <button onClick={handleExportPNG} className="gt-btn" style={{ width: "100%", justifyContent: "center", marginBottom: 6 }}>Download PNG</button>
+                <button onClick={handleCopyPNG} className="gt-btn" style={{ width: "100%", justifyContent: "center" }}>Copy PNG to Clipboard</button>
+
+                <div style={{ height: 1, background: "var(--gt-border-subtle)", margin: "12px 0" }} />
+
+                <div className="gt-card__header" style={{ marginBottom: 8 }}>Data Edits</div>
+                <button onClick={handleExportEdits} className="gt-btn" style={{ width: "100%", justifyContent: "center", marginBottom: 6 }}>Export Edits</button>
+                <button onClick={() => importEditsRef.current?.click()} className="gt-btn" style={{ width: "100%", justifyContent: "center" }}>Import Edits</button>
+                <input ref={importEditsRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportEdits} />
                 {Object.keys(unitEdits).length > 0 && (
-                  <button onClick={() => setUnitEdits({})} style={{ padding: "4px 10px", color: "red", border: "1px solid #faa", cursor: "pointer", fontSize: 11 }}>
+                  <button onClick={() => setUnitEdits({})} className="gt-btn gt-btn--danger" style={{ width: "100%", justifyContent: "center", marginTop: 6 }}>
                     Reset All Edits ({Object.keys(unitEdits).length})
                   </button>
                 )}
-                <button onClick={handleExportEdits} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer", fontSize: 11 }}>Export Edits</button>
-                <button onClick={() => importEditsRef.current?.click()} style={{ padding: "4px 10px", border: "1px solid #aaa", cursor: "pointer", fontSize: 11 }}>Import Edits</button>
-                <input ref={importEditsRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportEdits} />
               </div>
             )}
           </div>
@@ -1649,8 +1695,8 @@ function App() {
 
       {/* Hover tooltip */}
       {hoverUnit && (() => {
-        const TOOLTIP_W = 260;
-        const TOOLTIP_H = 90;
+        const TOOLTIP_W = 280;
+        const TOOLTIP_H = 110;
         const tipLeft = tooltipPos.x + 14 + TOOLTIP_W > window.innerWidth
           ? tooltipPos.x - 14 - TOOLTIP_W
           : tooltipPos.x + 14;
@@ -1658,34 +1704,17 @@ function App() {
           ? tooltipPos.y - 14 - TOOLTIP_H
           : tooltipPos.y + 14;
         return (
-        <div style={{
-          position: "fixed",
-          left: tipLeft,
-          top: tipTop,
-          background: "rgba(0,0,0,0.82)",
-          color: "white",
-          padding: "6px 10px",
-          borderRadius: 4,
-          fontSize: 12,
-          lineHeight: 1.4,
-          pointerEvents: "none",
-          zIndex: 1000,
-          maxWidth: 260,
-        }}>
-          <div style={{ fontWeight: "bold" }}>{hoverUnit.displayName}</div>
-          {hoverUnit.displayNameStratigraphic &&
-            hoverUnit.displayNameStratigraphic !== hoverUnit.displayName && (
-            <div style={{ fontSize: 11, opacity: 0.75 }}>
-              {hoverUnit.displayNameStratigraphic}
-            </div>
-          )}
-          <div style={{ fontSize: 11, opacity: 0.75 }}>{hoverUnit.rankTime}</div>
-          {hoverUnit.start !== null && (
-            <div style={{ fontSize: 11 }}>
-              {hoverUnit.end ?? 0}–{hoverUnit.start} Ma
-            </div>
-          )}
-        </div>
+          <div className="gt-tooltip" style={{ left: tipLeft, top: tipTop }}>
+            <div className="gt-tooltip__name">{hoverUnit.displayName}</div>
+            {hoverUnit.displayNameStratigraphic &&
+              hoverUnit.displayNameStratigraphic !== hoverUnit.displayName && (
+              <div className="gt-tooltip__strat">{hoverUnit.displayNameStratigraphic}</div>
+            )}
+            <div className="gt-tooltip__rank">{hoverUnit.rankTime}</div>
+            {hoverUnit.start !== null && (
+              <div className="gt-tooltip__age">{hoverUnit.end ?? 0}–{hoverUnit.start} Ma</div>
+            )}
+          </div>
         );
       })()}
     </div>

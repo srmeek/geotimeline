@@ -37,9 +37,11 @@ export default function CustomScrollbar({
     ? 0
     : Math.max(0, Math.min(availTrack, ((vMin - clampMin) / (clampSpan - visSpan)) * availTrack));
 
-  const thumbBg = isDragging || isHovering
-    ? "rgba(80, 80, 80, 0.65)"
-    : "rgba(140, 140, 140, 0.45)";
+  const thumbBg = isDragging
+    ? "var(--gt-accent)"
+    : isHovering
+    ? "rgba(0, 0, 0, 0.32)"
+    : "rgba(0, 0, 0, 0.18)";
 
   const handleThumbMouseDown = (e) => {
     e.preventDefault();
@@ -96,9 +98,9 @@ export default function CustomScrollbar({
         position: "absolute",
         top: 0,
         right: 1,
-        width: 12,
+        width: 10,
         height: "100%",
-        background: "rgba(0,0,0,0.06)",
+        background: "transparent",
         cursor: "default",
         zIndex: 20,
         userSelect: "none",
@@ -112,13 +114,13 @@ export default function CustomScrollbar({
         style={{
           position: "absolute",
           top: thumbTop,
-          left: 1,
-          right: 1,
+          left: 2,
+          width: 6,
           height: thumbH,
           background: thumbBg,
-          borderRadius: 6,
+          borderRadius: 3,
           cursor: isDragging ? "grabbing" : "grab",
-          transition: isDragging ? "none" : "background 0.1s",
+          transition: isDragging ? "none" : "background var(--gt-transition, 120ms ease)",
         }}
       />
     </div>

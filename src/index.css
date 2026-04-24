@@ -1,68 +1,183 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  /* Surfaces */
+  --gt-bg-app:        #ffffff;
+  --gt-bg-toolbar:    #fafaf9;
+  --gt-bg-panel:      #f6f7f9;
+  --gt-bg-card:       #ffffff;
+  --gt-bg-hover:      #eef1f5;
+  --gt-bg-active:     #eff4ff;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  /* Borders */
+  --gt-border-subtle: #ebedf0;
+  --gt-border:        #d6d9de;
+  --gt-border-strong: #9ca3af;
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  /* Text */
+  --gt-text-primary:   #15171a;
+  --gt-text-secondary: #5c636d;
+  --gt-text-tertiary:  #8b919a;
+  --gt-text-disabled:  #b8bdc4;
+  --gt-text-inverse:   #ffffff;
+
+  /* Accent */
+  --gt-accent:        #2563eb;
+  --gt-accent-hover:  #1d4ed8;
+  --gt-accent-subtle: #eff4ff;
+  --gt-accent-border: #bfd1ff;
+
+  /* Semantic */
+  --gt-danger:        #dc2626;
+  --gt-danger-bg:     #fef2f2;
+  --gt-danger-border: #fca5a5;
+  --gt-warning-bg:    #fef9c3;
+
+  /* Shadows */
+  --gt-shadow-sm: 0 1px 2px rgba(15, 17, 26, 0.04);
+  --gt-shadow-md: 0 2px 8px rgba(15, 17, 26, 0.08);
+  --gt-shadow-lg: 0 4px 20px rgba(15, 17, 26, 0.10), 0 1px 3px rgba(15, 17, 26, 0.06);
+
+  /* Radii */
+  --gt-radius-sm: 4px;
+  --gt-radius:    6px;
+  --gt-radius-lg: 8px;
+
+  /* Typography */
+  --gt-font-ui:   'Inter Variable', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --gt-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+
+  /* Transitions */
+  --gt-transition: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Globals */
+  font-family: var(--gt-font-ui);
+  font-size: 12px;
+  color: var(--gt-text-primary);
+  background: var(--gt-bg-app);
+  accent-color: var(--gt-accent);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
+  overflow: hidden;
   min-width: 320px;
   min-height: 100vh;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
+button, input, select, textarea {
   font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
+  font-size: inherit;
+  color: inherit;
 }
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+button { cursor: pointer; }
+
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--gt-accent);
+  outline-offset: 1px;
+  border-radius: var(--gt-radius-sm);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+/* Panel overflow scrollbars */
+.gt-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.gt-scroll::-webkit-scrollbar-track { background: transparent; }
+.gt-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.14);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
+.gt-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,0.28);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* Range slider */
+input[type="range"].gt-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"].gt-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--gt-border);
+  border-radius: 2px;
+}
+input[type="range"].gt-range::-moz-range-track {
+  height: 4px;
+  background: var(--gt-border);
+  border-radius: 2px;
+}
+input[type="range"].gt-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: white;
+  border: 1.5px solid var(--gt-border-strong);
+  border-radius: 50%;
+  margin-top: -5px;
+  box-shadow: var(--gt-shadow-sm);
+  transition: border-color var(--gt-transition), transform var(--gt-transition);
+}
+input[type="range"].gt-range::-webkit-slider-thumb:hover { border-color: var(--gt-accent); }
+input[type="range"].gt-range:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+  border-color: var(--gt-accent);
+}
+input[type="range"].gt-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: white;
+  border: 1.5px solid var(--gt-border-strong);
+  border-radius: 50%;
+  box-shadow: var(--gt-shadow-sm);
+}
+
+/* Select */
+select.gt-select {
+  height: 28px;
+  padding: 0 28px 0 10px;
+  font-size: 12px;
+  line-height: 1;
+  border: 1px solid var(--gt-border);
+  border-radius: var(--gt-radius-sm);
+  background: white;
+  color: var(--gt-text-primary);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%235c636d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  transition: border-color var(--gt-transition);
+}
+select.gt-select:hover { border-color: var(--gt-border-strong); }
+select.gt-select:focus-visible { border-color: var(--gt-accent); outline-offset: 0; }
+select.gt-select.gt-select--sm {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 22px 0 8px;
+}
+
+/* Text / number inputs */
+input.gt-input {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  border: 1px solid var(--gt-border);
+  border-radius: var(--gt-radius-sm);
+  background: white;
+  color: var(--gt-text-primary);
+  transition: border-color var(--gt-transition);
+  font-variant-numeric: tabular-nums;
+}
+input.gt-input:hover { border-color: var(--gt-border-strong); }
+input.gt-input:focus-visible { border-color: var(--gt-accent); outline-offset: 0; }
