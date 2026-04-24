@@ -230,7 +230,12 @@ function App() {
   // Dynamic time extent — shrinks when units are hidden.
   // Memoized: reduces over ~100 units on every keystroke otherwise.
   const { dynamicMinAge, dynamicMaxAge } = useMemo(() => {
-    const visible = effectiveUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits));
+    const visLevels = columnConfig.filter(col => col.visible).map(col => col.level);
+    const visible = effectiveUnits.filter(u =>
+      u.start !== null &&
+      isUnitVisible(u.id, hiddenUnits) &&
+      visLevels.includes(u.levelOrder)
+    );
     if (visible.length === 0) return { dynamicMinAge: ICS_MIN_AGE, dynamicMaxAge: ICS_MAX_AGE };
     let minAge = Infinity, maxAge = -Infinity;
     for (const u of visible) {
@@ -239,7 +244,7 @@ function App() {
       if (end < minAge) minAge = end;
     }
     return { dynamicMinAge: minAge, dynamicMaxAge: maxAge };
-  }, [effectiveUnits, hiddenUnits]);
+  }, [effectiveUnits, hiddenUnits, columnConfig]);
 
   // Refs so zoom/pan closures always see the latest dynamic bounds.
   // Read by event handlers and the rAF loop; mirrored from state every render.
@@ -457,7 +462,7 @@ function App() {
         });
         boundaryMap.forEach(({ uncertainty, approximate }, age) => boundaryAges.push({ age, uncertainty, approximate }));
       }
-      if (!boundaryAges.some(b => b.age === 0)) boundaryAges.push({ age: 0, uncertainty: null, approximate: false });
+      if (!boundaryAges.some(b => b.age === dynamicMinAge)) boundaryAges.push({ age: dynamicMinAge, uncertainty: null, approximate: false });
       const _seen = new Set();
       boundaryAges = boundaryAges.filter(b => { if (_seen.has(b.age)) return false; _seen.add(b.age); return true; })
         .sort((a, b) => b.age - a.age);

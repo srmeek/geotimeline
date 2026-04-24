@@ -346,8 +346,9 @@ export default function TimelineCanvas({
           });
         }
 
-        if (!boundaryAges.some(b => b.age === 0)) {
-          boundaryAges.push({ age: 0, uncertainty: null, approximate: false });
+        const _dynMin = dynamicMinAgeRef.current;
+        if (!boundaryAges.some(b => b.age === _dynMin)) {
+          boundaryAges.push({ age: _dynMin, uncertainty: null, approximate: false });
         }
         const _seen = new Set();
         boundaryAges = boundaryAges
