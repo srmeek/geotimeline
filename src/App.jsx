@@ -10,7 +10,7 @@ import {
 } from "./lib/scale.js";
 import { ALL_UNITS, UNIT_MAP, isUnitVisible } from "./lib/units.js";
 import TimelineCanvas from "./components/TimelineCanvas.jsx";
-import { computeCropEdges } from "./lib/cropEdges.js";
+import { buildEffectiveExtents } from "./lib/cropEdges.js";
 import CustomScrollbar from "./components/CustomScrollbar.jsx";
 
 const ICS_MIN_AGE = 0;
@@ -240,11 +240,13 @@ function App() {
     if (visible.length === 0) return { dynamicMinAge: ICS_MIN_AGE, dynamicMaxAge: ICS_MAX_AGE };
     let minAge = Infinity, maxAge = -Infinity;
     const visibleSetForCrop = new Set(visible.map(u => u.id));
+    const cropExtents = buildEffectiveExtents(effectiveUnits, visibleSetForCrop);
     for (const u of visible) {
-      const { effectiveStart, effectiveEnd } =
-        computeCropEdges(u, effectiveUnits, visibleSetForCrop);
-      if (effectiveStart > maxAge) maxAge = effectiveStart;
-      if (effectiveEnd   < minAge) minAge = effectiveEnd;
+      const ext = cropExtents.get(u.id);
+      const eStart = ext ? ext.effectiveStart : u.start;
+      const eEnd   = ext ? ext.effectiveEnd   : (u.end ?? 0);
+      if (eStart > maxAge) maxAge = eStart;
+      if (eEnd   < minAge) minAge = eEnd;
     }
     return { dynamicMinAge: minAge, dynamicMaxAge: maxAge };
   }, [effectiveUnits, hiddenUnits, columnConfig]);
@@ -304,6 +306,7 @@ function App() {
 
     const allUnits   = effectiveUnits;
     const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
+    const svgCropExtents = buildEffectiveExtents(allUnits, visibleSet);
     const scaleUnits = scaleType === "equalSize"
       ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
       : allUnits;
@@ -391,7 +394,11 @@ function App() {
           : colBandStart;
         const orientWidth = spanColumns[spanColumns.length - 1].end - orientBandStart;
 
-        const { effectiveStart, effectiveEnd, waveTop, waveBottom } = computeCropEdges(unit, allUnits, visibleSet);
+        const ext = svgCropExtents.get(unit.id);
+        const effectiveStart = ext ? ext.effectiveStart : unit.start;
+        const effectiveEnd   = ext ? ext.effectiveEnd   : (unit.end ?? 0);
+        const waveTop        = ext ? ext.waveTop        : false;
+        const waveBottom     = ext ? ext.waveBottom     : false;
         const pos1 = scale(effectiveStart);
         const pos2 = scale(effectiveEnd);
         const blockY = Math.min(pos1, pos2);

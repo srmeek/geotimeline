@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-25 (session 19)*
+*Last Updated: 2026-04-25 (session 20)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,14 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 20 — Cascading crop: buildEffectiveExtents replaces computeCropEdges.**
+
+- **`src/lib/cropEdges.js`** rewritten: `computeCropEdges` removed; replaced by `buildEffectiveExtents(allUnits, visibleSet)` which returns a `Map<unitId, {effectiveStart, effectiveEnd, waveTop, waveBottom}>`. Processes units sorted finest-level-first (`b.levelOrder - a.levelOrder`) so each parent can look up its children's already-computed effective extents rather than raw data extents — cascading crop now works correctly (e.g. Phanerozoic crops to Jurassic's effective extent, not Mesozoic's raw extent).
+- **`TimelineCanvas.jsx`**: calls `buildEffectiveExtents(allUnits, visibleSet)` once per frame (after `visibleSet` is built, before `visLevels.forEach`); each unit in the loop does a single `effectiveExtents.get(unit.id)` map lookup.
+- **`App.jsx`**: useMemo uses `buildEffectiveExtents` with `visibleSetForCrop` for cascaded domain min/max; `buildSVGForExport` calls `buildEffectiveExtents(allUnits, visibleSet)` once before the `visLevels.forEach` block and does map lookups per unit.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 19 — Wavy crop edge (revised): computeCropEdges in its own module; domain uses effective extents.**
 

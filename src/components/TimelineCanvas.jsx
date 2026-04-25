@@ -9,7 +9,7 @@ import {
   zoomToFocal,
 } from "../lib/scale.js";
 import { UNIT_MAP, isUnitVisible } from "../lib/units.js";
-import { computeCropEdges } from "../lib/cropEdges.js";
+import { buildEffectiveExtents } from "../lib/cropEdges.js";
 
 const MARGIN = 14;
 
@@ -96,6 +96,7 @@ export default function TimelineCanvas({
 
       const allUnits   = effectiveUnits;
       const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
+      const effectiveExtents = buildEffectiveExtents(allUnits, visibleSet);
 
       const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
       const cols = [
@@ -169,7 +170,11 @@ export default function TimelineCanvas({
           const x = spanColumns[0].start + lateral;
           const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
 
-          const { effectiveStart, effectiveEnd, waveTop, waveBottom } = computeCropEdges(unit, allUnits, visibleSet);
+          const ext = effectiveExtents.get(unit.id);
+          const effectiveStart = ext ? ext.effectiveStart : unit.start;
+          const effectiveEnd   = ext ? ext.effectiveEnd   : unit.end;
+          const waveTop        = ext ? ext.waveTop        : false;
+          const waveBottom     = ext ? ext.waveBottom     : false;
           const y1 = scale(effectiveStart);
           const y2 = scale(effectiveEnd);
           const y  = Math.min(y1, y2);
