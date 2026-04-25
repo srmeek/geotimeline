@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-25 (session 18)*
+*Last Updated: 2026-04-25 (session 19)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,15 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 19 — Wavy crop edge (revised): computeCropEdges in its own module; domain uses effective extents.**
+
+- **`src/lib/cropEdges.js`** (new): exports `computeCropEdges(unit, allUnits, visibleSet)` — pure function, no React/DOM/canvas dependencies. Traces descendant chain via `UNIT_MAP`, computes visible-descendant extent, checks gap occupancy, returns `{ effectiveStart, effectiveEnd, waveTop, waveBottom }`.
+- **`TimelineCanvas.jsx`**: imports `computeCropEdges` from `../lib/cropEdges.js`. Canvas wave rendering unchanged: `WAVE_AMP=7`, `WAVE_PERIOD=16`; dashed quadratic-bezier wave on cropped edges; `ctx.setLineDash([])`/`ctx.lineCap="butt"` always restored. The Session 18 inline definition and `eslint-disable` comment removed.
+- **`App.jsx`**: imports `computeCropEdges` from `./lib/cropEdges.js`. The `dynamicMinAge`/`dynamicMaxAge` useMemo now iterates visible units through `computeCropEdges` to find the effective extents — so the reset view and scale domain auto-fit to the cropped unit boundaries rather than raw unit edges.
+- SVG export (BlockRenderer.js / buildSVGForExport) not touched this session.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 18 — Wavy crop edge for parent units with partially-hidden descendants.**
 

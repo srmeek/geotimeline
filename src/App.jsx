@@ -9,7 +9,8 @@ import {
   makeScale,
 } from "./lib/scale.js";
 import { ALL_UNITS, UNIT_MAP, isUnitVisible } from "./lib/units.js";
-import TimelineCanvas, { computeCropEdges } from "./components/TimelineCanvas.jsx";
+import TimelineCanvas from "./components/TimelineCanvas.jsx";
+import { computeCropEdges } from "./lib/cropEdges.js";
 import CustomScrollbar from "./components/CustomScrollbar.jsx";
 
 const ICS_MIN_AGE = 0;
@@ -238,10 +239,12 @@ function App() {
     );
     if (visible.length === 0) return { dynamicMinAge: ICS_MIN_AGE, dynamicMaxAge: ICS_MAX_AGE };
     let minAge = Infinity, maxAge = -Infinity;
+    const visibleSetForCrop = new Set(visible.map(u => u.id));
     for (const u of visible) {
-      if (u.start > maxAge) maxAge = u.start;
-      const end = u.end ?? 0;
-      if (end < minAge) minAge = end;
+      const { effectiveStart, effectiveEnd } =
+        computeCropEdges(u, effectiveUnits, visibleSetForCrop);
+      if (effectiveStart > maxAge) maxAge = effectiveStart;
+      if (effectiveEnd   < minAge) minAge = effectiveEnd;
     }
     return { dynamicMinAge: minAge, dynamicMaxAge: maxAge };
   }, [effectiveUnits, hiddenUnits, columnConfig]);
