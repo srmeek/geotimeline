@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-24 (session 17)*
+*Last Updated: 2026-04-25 (session 18)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,15 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 18 — Wavy crop edge for parent units with partially-hidden descendants.**
+
+- **`computeCropEdges(unit, allUnits, visibleSet)`**: shared pure function exported from `src/components/TimelineCanvas.jsx`, imported and used by both canvas (`drawFrame`) and SVG export (`buildSVGForExport` in `App.jsx`). Takes a unit, the full allUnits array, and a Set of visible unit ids; returns `{ effectiveStart, effectiveEnd, waveTop, waveBottom }`. Traces the descendant chain via `UNIT_MAP` to find visible descendants, computes their age extent, checks whether each edge gap is occupied by another visible unit, and crops only unoccupied gaps.
+- **Canvas wave rendering** (`TimelineCanvas.jsx`): `WAVE_AMP=7`, `WAVE_PERIOD=16`. Non-waved blocks take the unchanged fast path (fillRect + strokeRect). Waved blocks: white background rect, colored fill bounded by quadratic-bezier wave path, straight borders on non-waved edges, dashed wavy stroke (`stroke-dasharray 6,4`, `stroke-linecap round`) on waved edges drawn last. `ctx.setLineDash([])` and `ctx.lineCap = "butt"` always restored after the wave block.
+- **SVG export wave rendering** (`BlockRenderer.js`): `svgWavePath` (LTR) and `svgWavePathRTL` helper functions produce SVG `Q` bezier path fragments. Waved blocks rendered as white `<rect>` background + `<path>` fill + straight `<line>` borders + dashed `<path>` wave stroke. Standard blocks unchanged.
+- **Hitbox and label centering** use the cropped y/h values automatically since `effectiveStart`/`effectiveEnd` replace `unit.start`/`unit.end` before computing y1/y2.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 17 — Two follow-up fixes to domain/picks.**
 

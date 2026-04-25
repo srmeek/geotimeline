@@ -12,6 +12,80 @@ import { UNIT_MAP, isUnitVisible } from "../lib/units.js";
 
 const MARGIN = 14;
 
+const WAVE_AMP    = 7;
+const WAVE_PERIOD = 16;
+
+function buildWaveSegments(x, y, width, amp, period) {
+  const half = period / 2;
+  const segs = [];
+  let cx = x, flip = 1;
+  while (cx < x + width) {
+    const ex = Math.min(cx + half, x + width);
+    segs.push({ cpx: (cx + ex) / 2, cpy: y - amp * flip, ex });
+    cx = ex; flip = -flip;
+  }
+  return segs;
+}
+
+function buildWaveSegmentsRTL(x, y, width, amp, period) {
+  const half = period / 2;
+  const segs = [];
+  let cx = x + width, flip = 1;
+  while (cx > x) {
+    const ex = Math.max(cx - half, x);
+    segs.push({ cpx: (cx + ex) / 2, cpy: y - amp * flip, ex });
+    cx = ex; flip = -flip;
+  }
+  return segs;
+}
+
+// Returns { effectiveStart, effectiveEnd, waveTop, waveBottom }
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeCropEdges(unit, allUnits, visibleSet) {
+  const unitEnd   = unit.end ?? 0;
+  const unitStart = unit.start;
+
+  const visibleDescendants = allUnits.filter(u => {
+    if (!visibleSet.has(u.id)) return false;
+    if (u.id === unit.id) return false;
+    let pid = u.parent;
+    while (pid) {
+      if (pid === unit.id) return true;
+      pid = UNIT_MAP[pid]?.parent;
+    }
+    return false;
+  });
+
+  if (visibleDescendants.length === 0) {
+    return { effectiveStart: unitStart, effectiveEnd: unitEnd, waveTop: false, waveBottom: false };
+  }
+
+  const descMaxAge = Math.max(...visibleDescendants.map(u => u.start));
+  const descMinAge = Math.min(...visibleDescendants.map(u => u.end ?? 0));
+
+  let waveBottom = false;
+  let effectiveStart = unitStart;
+  if (descMaxAge < unitStart) {
+    const gapOccupied = allUnits.some(u =>
+      u.id !== unit.id && visibleSet.has(u.id) &&
+      u.start > descMaxAge && (u.end ?? 0) < unitStart
+    );
+    if (!gapOccupied) { waveBottom = true; effectiveStart = descMaxAge; }
+  }
+
+  let waveTop = false;
+  let effectiveEnd = unitEnd;
+  if (descMinAge > unitEnd) {
+    const gapOccupied = allUnits.some(u =>
+      u.id !== unit.id && visibleSet.has(u.id) &&
+      (u.end ?? 0) < descMinAge && u.start > unitEnd
+    );
+    if (!gapOccupied) { waveTop = true; effectiveEnd = descMinAge; }
+  }
+
+  return { effectiveStart, effectiveEnd, waveTop, waveBottom };
+}
+
 export default function TimelineCanvas({
   canvasRef, hitBoxesRef, rafHandleRef,
   visibleDomainRef, lateralOffsetRef,
@@ -140,19 +214,89 @@ export default function TimelineCanvas({
 
           const x = spanColumns[0].start + lateral;
           const w = spanColumns[spanColumns.length - 1].end - spanColumns[0].start;
-          const y1 = scale(unit.start);
-          const y2 = scale(unit.end);
+
+          const { effectiveStart, effectiveEnd, waveTop, waveBottom } = computeCropEdges(unit, allUnits, visibleSet);
+          const y1 = scale(effectiveStart);
+          const y2 = scale(effectiveEnd);
           const y  = Math.min(y1, y2);
           const h  = Math.abs(y2 - y1);
 
           if (y > viewH || y + h < 0) return;
           hitBoxes.push({ id: unit.id, x, y, w, h });
 
-          ctx.fillStyle = unit.icsColor || "#cccccc";
-          ctx.fillRect(x, y, w, h);
-          ctx.strokeStyle = "rgba(0,0,0,0.4)";
-          ctx.lineWidth = 0.5;
-          ctx.strokeRect(x, y, w, h);
+          if (!waveTop && !waveBottom) {
+            // ── fast path ──
+            ctx.fillStyle = unit.icsColor || "#cccccc";
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = "rgba(0,0,0,0.4)";
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(x, y, w, h);
+          } else {
+            // ── cropped block with wave edges ──
+
+            // 1. White background
+            ctx.fillStyle = "white";
+            ctx.fillRect(x, y, w, h);
+
+            // 2. Colored fill clipped to wave-bounded path
+            ctx.save();
+            ctx.beginPath();
+            if (waveTop) {
+              const segs = buildWaveSegments(x, y, w, WAVE_AMP, WAVE_PERIOD);
+              ctx.moveTo(x, y);
+              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y));
+            } else {
+              ctx.moveTo(x, y);
+              ctx.lineTo(x + w, y);
+            }
+            ctx.lineTo(x + w, y + h);
+            if (waveBottom) {
+              const segs = buildWaveSegmentsRTL(x, y + h, w, WAVE_AMP, WAVE_PERIOD);
+              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y + h));
+            } else {
+              ctx.lineTo(x, y + h);
+            }
+            ctx.closePath();
+            ctx.fillStyle = unit.icsColor || "#cccccc";
+            ctx.fill();
+            ctx.restore();
+
+            // 3. Straight borders on non-waved edges only
+            ctx.strokeStyle = "rgba(0,0,0,0.4)";
+            ctx.lineWidth = 0.5;
+            ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + h); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x + w, y); ctx.lineTo(x + w, y + h); ctx.stroke();
+            if (!waveTop) {
+              ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
+            }
+            if (!waveBottom) {
+              ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x + w, y + h); ctx.stroke();
+            }
+
+            // 4. Wavy dashed stroke on waved edges (drawn last, on top)
+            ctx.strokeStyle = "rgba(0,0,0,0.55)";
+            ctx.lineWidth = 1.5;
+            ctx.lineCap = "round";
+            ctx.setLineDash([6, 4]);
+            if (waveTop) {
+              const segs = buildWaveSegments(x, y, w, WAVE_AMP, WAVE_PERIOD);
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y));
+              ctx.stroke();
+            }
+            if (waveBottom) {
+              const segs = buildWaveSegments(x, y + h, w, WAVE_AMP, WAVE_PERIOD);
+              ctx.beginPath();
+              ctx.moveTo(x, y + h);
+              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y + h));
+              ctx.stroke();
+            }
+            // ALWAYS restore line state
+            ctx.setLineDash([]);
+            ctx.lineCap = "butt";
+          }
 
           const labelText = (() => {
             const ts = unit.displayName;

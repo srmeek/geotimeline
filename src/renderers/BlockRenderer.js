@@ -1,3 +1,28 @@
+const WAVE_AMP    = 7;
+const WAVE_PERIOD = 16;
+
+function svgWavePath(x, y, width, amp, period) {
+  const half = period / 2;
+  let cx = x, flip = 1, d = "";
+  while (cx < x + width) {
+    const ex = Math.min(cx + half, x + width);
+    d += `Q${(cx + ex) / 2},${y - amp * flip} ${ex},${y} `;
+    cx = ex; flip = -flip;
+  }
+  return d;
+}
+
+function svgWavePathRTL(x, y, width, amp, period) {
+  const half = period / 2;
+  let cx = x + width, flip = 1, d = "";
+  while (cx > x) {
+    const ex = Math.max(cx - half, x);
+    d += `Q${(cx + ex) / 2},${y - amp * flip} ${ex},${y} `;
+    cx = ex; flip = -flip;
+  }
+  return d;
+}
+
 // Module-level canvas for text measurement
 const _mc = document.createElement("canvas");
 const _mctx = _mc.getContext("2d");
@@ -79,18 +104,78 @@ export function renderBlocks({
   fontUnderline = false,
 }) {
   blocks.forEach(block => {
-    // ── rect ──────────────────────────────────────────────────────────────
-    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    rect.setAttribute("x", block.x);
-    rect.setAttribute("y", block.y);
-    rect.setAttribute("width", block.width);
-    rect.setAttribute("height", block.height);
-    rect.setAttribute("fill", block.fill);
-    rect.setAttribute("stroke", "black");
-    rect.setAttribute("stroke-width", 0.5);
-    rect.setAttribute("data-base-stroke", "0.5");
-    if (block.unitId) rect.setAttribute("data-unit-id", block.unitId);
-    svg.appendChild(rect);
+    // ── rect / wave block ─────────────────────────────────────────────────
+    const bx = block.x, by = block.y, bw = block.width, bh = block.height;
+
+    if (block.waveTop || block.waveBottom) {
+      // White background
+      const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bg.setAttribute("x", bx); bg.setAttribute("y", by);
+      bg.setAttribute("width", bw); bg.setAttribute("height", bh);
+      bg.setAttribute("fill", "white");
+      if (block.unitId) bg.setAttribute("data-unit-id", block.unitId);
+      svg.appendChild(bg);
+
+      // Colored fill path bounded by wave edges
+      let fillD = "";
+      if (block.waveTop) {
+        fillD += `M${bx},${by} ` + svgWavePath(bx, by, bw, WAVE_AMP, WAVE_PERIOD);
+      } else {
+        fillD += `M${bx},${by} L${bx + bw},${by} `;
+      }
+      fillD += `L${bx + bw},${by + bh} `;
+      if (block.waveBottom) {
+        fillD += svgWavePathRTL(bx, by + bh, bw, WAVE_AMP, WAVE_PERIOD);
+      } else {
+        fillD += `L${bx},${by + bh} `;
+      }
+      fillD += "Z";
+      const fillPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      fillPath.setAttribute("d", fillD);
+      fillPath.setAttribute("fill", block.fill);
+      svg.appendChild(fillPath);
+
+      // Straight borders on non-waved edges
+      const addLine = (x1, y1, x2, y2) => {
+        const ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        ln.setAttribute("x1", x1); ln.setAttribute("y1", y1);
+        ln.setAttribute("x2", x2); ln.setAttribute("y2", y2);
+        ln.setAttribute("stroke", "rgba(0,0,0,0.4)");
+        ln.setAttribute("stroke-width", "0.5");
+        svg.appendChild(ln);
+      };
+      addLine(bx, by, bx, by + bh);
+      addLine(bx + bw, by, bx + bw, by + bh);
+      if (!block.waveTop)    addLine(bx, by, bx + bw, by);
+      if (!block.waveBottom) addLine(bx, by + bh, bx + bw, by + bh);
+
+      // Wavy dashed stroke on waved edges
+      const addWaveStroke = (d) => {
+        const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        p.setAttribute("d", d);
+        p.setAttribute("fill", "none");
+        p.setAttribute("stroke", "rgba(0,0,0,0.55)");
+        p.setAttribute("stroke-width", "1.5");
+        p.setAttribute("stroke-linecap", "round");
+        p.setAttribute("stroke-dasharray", "6,4");
+        svg.appendChild(p);
+      };
+      if (block.waveTop)    addWaveStroke(`M${bx},${by} `    + svgWavePath(bx, by,    bw, WAVE_AMP, WAVE_PERIOD));
+      if (block.waveBottom) addWaveStroke(`M${bx},${by + bh} ` + svgWavePath(bx, by + bh, bw, WAVE_AMP, WAVE_PERIOD));
+    } else {
+      // ── standard rect ──
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", bx);
+      rect.setAttribute("y", by);
+      rect.setAttribute("width", bw);
+      rect.setAttribute("height", bh);
+      rect.setAttribute("fill", block.fill);
+      rect.setAttribute("stroke", "black");
+      rect.setAttribute("stroke-width", 0.5);
+      rect.setAttribute("data-base-stroke", "0.5");
+      if (block.unitId) rect.setAttribute("data-unit-id", block.unitId);
+      svg.appendChild(rect);
+    }
 
     // ── label ─────────────────────────────────────────────────────────────
     const labelText = (block.label || "").trim();

@@ -9,7 +9,7 @@ import {
   makeScale,
 } from "./lib/scale.js";
 import { ALL_UNITS, UNIT_MAP, isUnitVisible } from "./lib/units.js";
-import TimelineCanvas from "./components/TimelineCanvas.jsx";
+import TimelineCanvas, { computeCropEdges } from "./components/TimelineCanvas.jsx";
 import CustomScrollbar from "./components/CustomScrollbar.jsx";
 
 const ICS_MIN_AGE = 0;
@@ -300,6 +300,7 @@ function App() {
     svgEl.setAttribute("height", String(Math.round(viewH)));
 
     const allUnits   = effectiveUnits;
+    const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
     const scaleUnits = scaleType === "equalSize"
       ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
       : allUnits;
@@ -387,8 +388,9 @@ function App() {
           : colBandStart;
         const orientWidth = spanColumns[spanColumns.length - 1].end - orientBandStart;
 
-        const pos1 = scale(unit.start);
-        const pos2 = scale(unit.end);
+        const { effectiveStart, effectiveEnd, waveTop, waveBottom } = computeCropEdges(unit, allUnits, visibleSet);
+        const pos1 = scale(effectiveStart);
+        const pos2 = scale(effectiveEnd);
         const blockY = Math.min(pos1, pos2);
         const blockHeight = Math.abs(pos2 - pos1);
         if (blockY > viewH || blockY + blockHeight < 0) return;
@@ -415,6 +417,7 @@ function App() {
           labelOrientation: colConf?.orientation ?? "auto",
           fontSize: blockFontSize,
           ageStart: unit.start, ageEnd: unit.end ?? 0,
+          waveTop, waveBottom,
         });
       });
     });
