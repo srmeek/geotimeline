@@ -790,11 +790,11 @@ function App() {
   // Recursive tree renderer — shows all non-stage units with toggle checkboxes
   function renderUnitTree(parentId, depth) {
     const children = effectiveUnits
-      .filter(u => u.parent === parentId && u.levelOrder < 6 && u.start !== null)
+      .filter(u => u.parent === parentId && u.start !== null)
       .sort((a, b) => b.start - a.start);
     if (children.length === 0) return null;
     return children.map(unit => {
-      const hasChildren = effectiveUnits.some(u => u.parent === unit.id && u.levelOrder < 6);
+      const hasChildren = effectiveUnits.some(u => u.parent === unit.id);
       const isHidden = hiddenUnits.has(unit.id);
       const ancestorHidden = !isHidden && !isUnitVisible(unit.id, hiddenUnits);
       const isExpanded = expandedNodes.has(unit.id);
@@ -1013,7 +1013,7 @@ function App() {
                 <div style={{ flex: 1, overflowY: "auto", padding: "2px 8px 8px" }} className="gt-scroll">
                   {unitSearch
                     ? effectiveUnits
-                        .filter(u => u.levelOrder < 6 && u.start !== null && u.displayName.toLowerCase().includes(unitSearch.toLowerCase()))
+                        .filter(u => u.start !== null && u.displayName.toLowerCase().includes(unitSearch.toLowerCase()))
                         .sort((a, b) => b.start - a.start)
                         .map(unit => {
                           const isHidden = hiddenUnits.has(unit.id);

@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-25 (session 33)*
+*Last Updated: 2026-04-25 (session 34)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,13 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 34 — Expand wave clip rect; show all levels in filter tree.**
+
+- **Wave clip fix** (`TimelineCanvas.jsx`): the white background rect and clip rect for waved blocks used `(x, y, w, h)`, clipping wave crests that extend ±`WAVE_AMP` beyond the block bounds. Added `clipY = waveTop ? y - WAVE_AMP : y` and `clipH = h + (waveTop ? WAVE_AMP : 0) + (waveBottom ? WAVE_AMP : 0)`; both rects now use `(x, clipY, w, clipH)`.
+- **Filter tree fix** (`App.jsx`): Ages/Stages (levelOrder 6) were excluded from the filter panel by three `u.levelOrder < 6` guards — in `renderUnitTree`'s children filter, in the `hasChildren` check (which also blocked the expand arrow and recursive render), and in the search results filter. All three removed; all levels now appear.
+
+Lint: 0 errors / 0 warnings.
 
 **Session 33 — Fix waveBottom fill: reversed LTR segments; remove unused buildWaveSegmentsRTL.**
 

@@ -232,14 +232,16 @@ export default function TimelineCanvas({
           ctx.lineWidth = 0.5;
           ctx.strokeRect(x, y, w, h);
         } else {
-          // White background
+          // White background — expanded to cover wave crests (±WAVE_AMP beyond block bounds)
+          const clipY = waveTop ? y - WAVE_AMP : y;
+          const clipH = h + (waveTop ? WAVE_AMP : 0) + (waveBottom ? WAVE_AMP : 0);
           ctx.fillStyle = "white";
-          ctx.fillRect(x, y, w, h);
+          ctx.fillRect(x, clipY, w, clipH);
 
           // Colored fill — wave origin from group minX so it matches the stroke
           ctx.save();
           ctx.beginPath();
-          ctx.rect(x, y, w, h);
+          ctx.rect(x, clipY, w, clipH);
           ctx.clip();
 
           ctx.fillStyle = unit.icsColor || "#cccccc";
