@@ -170,14 +170,14 @@ function App() {
   const [unitSearch, setUnitSearch] = useState("");
 
   const _defaultColumnConfig = [
-    { level: 0, label: "Super-Eon", labelStrat: "Super-Eonothem", visible: true, orientation: null, fontSize: null },
-    { level: 1, label: "Eon",       labelStrat: "Eonothem",       visible: true, orientation: null, fontSize: null },
-    { level: 2, label: "Era",       labelStrat: "Erathem",        visible: true, orientation: null, fontSize: null },
-    { level: 3, label: "Period",    labelStrat: "System",         visible: true, orientation: null, fontSize: null },
-    { level: 4, label: "Subperiod", labelStrat: "Subsystem",      visible: true, orientation: null, fontSize: null },
-    { level: 5,   label: "Epoch",    labelStrat: "Series",         visible: true, orientation: null, fontSize: null },
-    { level: 5.5, label: "Subepoch",labelStrat: "Subseries",      visible: false, orientation: null, fontSize: null },
-    { level: 6,   label: "Age",     labelStrat: "Stage",          visible: false, orientation: null, fontSize: null }
+    { level: 0, label: "Super-Eon", labelStrat: "Super-Eonothem", visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 1, label: "Eon",       labelStrat: "Eonothem",       visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 2, label: "Era",       labelStrat: "Erathem",        visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 3, label: "Period",    labelStrat: "System",         visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 4, label: "Subperiod", labelStrat: "Subsystem",      visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 5,   label: "Epoch",    labelStrat: "Series",         visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 5.5, label: "Subepoch",labelStrat: "Subseries",      visible: false, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 },
+    { level: 6,   label: "Age",     labelStrat: "Stage",          visible: false, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 }
   ];
   const [columnConfig, setColumnConfig] = useState(() => {
     const saved = _initPrefs.columnConfig;
@@ -186,10 +186,10 @@ function App() {
     if (!saved.some(c => c.level === 5.5)) {
       const injected = [...saved];
       const ageIdx = injected.findIndex(c => c.level === 6);
-      injected.splice(ageIdx, 0, { level: 5.5, label: "Subepoch", labelStrat: "Subseries", visible: true, orientation: null, fontSize: null });
-      return injected.map(c => ({ orientation: null, fontSize: null, ...c }));
+      injected.splice(ageIdx, 0, { level: 5.5, label: "Subepoch", labelStrat: "Subseries", visible: true, orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25 });
+      return injected.map(c => ({ orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25, ...c }));
     }
-    return saved.map(c => ({ orientation: null, fontSize: null, ...c }));
+    return saved.map(c => ({ orientation: null, fontSize: null, splitView: false, splitPropFraction: 0.25, splitConnFraction: 0.25, ...c }));
   });
 
   const [columnWidths, setColumnWidths] = useState(() => {
@@ -982,6 +982,14 @@ function App() {
                       className="gt-input"
                       style={{ width: 36 }}
                     />
+                    {col.visible && (
+                      <button
+                        className={`gt-btn gt-btn--toggle${col.splitView ? " gt-btn--active" : ""}`}
+                        style={{ padding: "0 6px", fontSize: 10, height: 24 }}
+                        onClick={() => setColumnConfig(columnConfig.map((c, i) => i === index ? { ...c, splitView: !c.splitView } : c))}
+                        title="Toggle split view"
+                      >Split</button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1230,6 +1238,56 @@ function App() {
             />
           );
         })}
+
+        {/* Split-view zone handles */}
+        {layout
+          .filter(col => columnConfig.find(c => c.level === col.id)?.splitView)
+          .flatMap(col => {
+            const cc = columnConfig.find(c => c.level === col.id);
+            const tx = lateralOffset;
+            const propFrac = cc.splitPropFraction ?? 0.25;
+            const connFrac = cc.splitConnFraction ?? 0.25;
+            const h1X = col.start + tx + col.width * propFrac;
+            const h2X = col.start + tx + col.width * (propFrac + connFrac);
+            return [
+              <div
+                key={`${col.id}-sv-prop`}
+                style={{ position: "absolute", left: h1X - 3, top: 0, width: 6, height: "100%", cursor: "ew-resize", zIndex: 15, pointerEvents: "auto" }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  const startX = e.clientX;
+                  const startPropFrac = cc.splitPropFraction ?? 0.25;
+                  const curConnFrac = cc.splitConnFraction ?? 0.25;
+                  const bw = col.width;
+                  const onMouseMove = (mv) => {
+                    const newFrac = Math.max(0.05, Math.min(startPropFrac + (mv.clientX - startX) / bw, 1 - curConnFrac - 0.05));
+                    setColumnConfig(prev => prev.map(c => c.level === col.id ? { ...c, splitPropFraction: newFrac } : c));
+                  };
+                  const onMouseUp = () => { window.removeEventListener("mousemove", onMouseMove); window.removeEventListener("mouseup", onMouseUp); };
+                  window.addEventListener("mousemove", onMouseMove);
+                  window.addEventListener("mouseup", onMouseUp);
+                }}
+              />,
+              <div
+                key={`${col.id}-sv-conn`}
+                style={{ position: "absolute", left: h2X - 3, top: 0, width: 6, height: "100%", cursor: "ew-resize", zIndex: 15, pointerEvents: "auto" }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  const startX = e.clientX;
+                  const curPropFrac = cc.splitPropFraction ?? 0.25;
+                  const startConnFrac = cc.splitConnFraction ?? 0.25;
+                  const bw = col.width;
+                  const onMouseMove = (mv) => {
+                    const newFrac = Math.max(0.05, Math.min(startConnFrac + (mv.clientX - startX) / bw, 1 - curPropFrac - 0.05));
+                    setColumnConfig(prev => prev.map(c => c.level === col.id ? { ...c, splitConnFraction: newFrac } : c));
+                  };
+                  const onMouseUp = () => { window.removeEventListener("mousemove", onMouseMove); window.removeEventListener("mouseup", onMouseUp); };
+                  window.addEventListener("mousemove", onMouseMove);
+                  window.addEventListener("mouseup", onMouseUp);
+                }}
+              />,
+            ];
+          })}
       </div>
 
       {/* Data Editor Sidebar */}

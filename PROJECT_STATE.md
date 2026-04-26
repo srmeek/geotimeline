@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-25 (session 34)*
+*Last Updated: 2026-04-26 (session 35, refinements 1–3)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,34 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 35 — Per-column split view (proportional / connector / equal-size) + refinements 1–3.**
+
+**Initial implementation:**
+- **Data model** (`App.jsx`): added `splitView: false`, `splitPropFraction: 0.25`, `splitConnFraction: 0.25` to every entry in `_defaultColumnConfig` and to both migration spreads.
+- **Left panel UI** (`App.jsx`): compact `Split` toggle button per column row; draggable HTML div handles for the prop/conn/equal zone boundaries (`splitPropFraction`, `splitConnFraction` stored in `columnConfig`, persisted to localStorage).
+- **Canvas rendering** (`TimelineCanvas.jsx`): split-view columns are collected into `splitViewData` during `visLevels.forEach` (early `return`). After the wave post-pass, rendered in five sub-passes: fills (prop rect + trapezoid connector + equal-size rect, no stroke), boundary lines (top / N-1 interior / bottom, plus 4 outer-box lines), labels (`computeFitAndWrap` in equal-size slots), hitboxes (prop + equal-size rects per unit).
+
+**Refinement 1 — Equal-size strip tracks proportional strip (zoom/pan stable):**
+- Instead of a fixed `[eM, viewH]` span, the equal-size strip derives `stripTop = min(propY0s)` and `stripBottom = max(propY1s)` from the proportional positions each frame, so it has exactly the same vertical extent as the proportional strip and moves/zooms with it.
+
+**Refinement 2 — Picks alignment + draggable zone handles:**
+- Picks for ages that are split-view unit boundaries were redirected to the equal-size y-positions (originally via `splitViewAgeToY` map — later replaced in Refinement 3's picks fix).
+- Two HTML `div` handles per split-view column (at `bandW * propFrac` and `bandW * (propFrac + connFrac)`) allow independently resizing the three zones via mouse drag.
+
+**Refinement 3 — Daughter columns remap into parent's equal-size slot:**
+- Added `const splitViewUnitMap = new Map()` populated during the split-view collection phase (`visLevels.forEach`, ascending order). Each split-view unit's `{ propY0, propY1, eqY0, eqY1 }` is stored keyed by `unit.id`.
+- For daughter split-view columns: `propPositions` computation now walks the parent chain against `splitViewUnitMap` and remaps `propY0/propY1` into the parent's equal-size slot before computing the daughter's own equal-size slots. Works recursively (ascending level order ensures parents are always processed first).
+- For non-split-view daughter columns: in the normal rendering path `y`/`h` were changed from `const` to `let`; after computing them from `scale()`, a parent-chain walk finds the nearest ancestor in `splitViewUnitMap` and remaps using `ratio = (eqY1 - eqY0) / (propY1 - propY0)`.
+- Pre-computation moved to collection phase: `unitDrawData`, `stripTop`, `stripBottom` are now computed in the collection block and stored in `splitViewData`, so the rendering loop just destructures them directly.
+
+**Picks fix — interpolation replaces age→y map:**
+- Replaced `splitViewAgeToY` (a Map keyed by exact boundary ages) with `pickYForAge(age)` — a closure over `splitViewData[0]` (the coarsest split-view level). For each age it finds the containing unit and interpolates within its equal-size slot: `eqY0 + t * (eqY1 - eqY0)` where `t = (scale(age) - propY0) / (propY1 - propY0)`. This eliminates two bugs: (1) multiple split-view levels overwriting each other's entries for the same age, and (2) interior ages (e.g. 145 Ma inside Mesozoic) getting the raw `scale(age)` position which could be visually above an expanded equal-size boundary — causing out-of-order picks.
+
+- No changes to `makeScale`, `buildScale`, `computeLayout`, `scale.js`, time axis, GSSP, or wave-crop rendering.
+- SVG export for split-view columns deferred.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
 
 **Session 34 — Expand wave clip rect; show all levels in filter tree.**
 
@@ -1005,12 +1033,16 @@ Paste this at the start of the next chat:
 
 ------------------------------------------------------------------------
 
-GeoTimeline — Canvas-only renderer. Sessions 10–13 added custom scrollbar,
+GeoTimeline — Canvas-only renderer. Sessions 10–16 added custom scrollbar,
 initial view centering, zoom-out headroom, scrollbar live-update fixes (S12),
-and scale-aware reset padding (S13). Session 14 clamped ticks to unit bounds.
-Session 15 replaced D3-based tick generation with span-based fixed-lattice ticks
-(pan-stable, no reshuffling during pan; D3 import removed from TimelineCanvas.jsx).
-App.jsx ~1650 lines. Test count 44 / 44. Lint 0 / 0.
+scale-aware reset padding (S13), tick clamping to unit bounds (S14), fixed-lattice
+ticks (S15, D3 removed from TimelineCanvas.jsx), and UI polish pass (S16).
+Sessions 17–35 added picks orphan-tops fix, auto-reset on columnConfig change,
+cascading crop (buildEffectiveExtents), wavy crop edges, wave rendering fixes,
+filter tree showing all levels, and Session 35 per-column split view with
+proportional/connector/equal-size zones, draggable zone handles, daughter column
+remapping into parent equal-size slot, and picks ordering fix (pickYForAge interpolation).
+App.jsx ~1750 lines. TimelineCanvas.jsx ~780 lines. Test count 44 / 44. Lint 0 / 0.
 
 Stack: React 19 + D3 v7 + Vite + Vitest. Geologic timescale visualizer.
 ICS 2024/12 data (189 units in src/data/geologicTime.json).

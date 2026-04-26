@@ -116,9 +116,66 @@ export default function TimelineCanvas({
 
       const collectedBlocks = [];
       const waveEdges = [];
+      const splitViewData = [];
+      const splitViewUnitMap = new Map();
 
       visLevels.forEach(level => {
         const colConf = columnConfig.find(c => c.level === level);
+
+        if (colConf?.splitView) {
+          const colEntry = frameLayout.find(col => col.id === level);
+          if (!colEntry) return;
+          const bandX = colEntry.start + lateral;
+          const bandW = colEntry.end - colEntry.start;
+          const propFrac = colConf?.splitPropFraction ?? 0.25;
+          const connFrac = colConf?.splitConnFraction ?? 0.25;
+          const propW  = bandW * propFrac;
+          const connW  = bandW * connFrac;
+          const equalW = bandW * (1 - propFrac - connFrac);
+          const propX  = bandX;
+          const connX  = bandX + propW;
+          const equalX = bandX + propW + connW;
+          const levelUnitsForSplit = allUnits
+            .filter(u => u.levelOrder === level && u.start !== null && visibleSet.has(u.id))
+            .map(u => ({ ...u, end: u.end ?? 0 }))
+            .sort((a, b) => a.end - b.end);
+          const propPositions = levelUnitsForSplit.map(unit => {
+            const ext = effectiveExtents.get(unit.id);
+            const effectiveStart = ext ? ext.effectiveStart : unit.start;
+            const effectiveEnd   = ext ? ext.effectiveEnd   : unit.end;
+            let propY0 = Math.min(scale(effectiveStart), scale(effectiveEnd));
+            let propY1 = Math.max(scale(effectiveStart), scale(effectiveEnd));
+            let pid = unit.parent;
+            let svEntry = null;
+            while (pid) {
+              if (splitViewUnitMap.has(pid)) { svEntry = splitViewUnitMap.get(pid); break; }
+              const p = UNIT_MAP[pid]; if (!p) break; pid = p.parent;
+            }
+            if (svEntry) {
+              const pSpan = svEntry.propY1 - svEntry.propY0;
+              if (pSpan > 0) {
+                const ratio = (svEntry.eqY1 - svEntry.eqY0) / pSpan;
+                propY0 = svEntry.eqY0 + (propY0 - svEntry.propY0) * ratio;
+                propY1 = svEntry.eqY0 + (propY1 - svEntry.propY0) * ratio;
+              }
+            }
+            return { propY0, propY1 };
+          });
+          const svStripTop    = propPositions.length ? Math.min(...propPositions.map(p => p.propY0)) : 0;
+          const svStripBottom = propPositions.length ? Math.max(...propPositions.map(p => p.propY1)) : 0;
+          const svEqualSlotH  = levelUnitsForSplit.length ? (svStripBottom - svStripTop) / levelUnitsForSplit.length : 0;
+          const unitDrawData  = levelUnitsForSplit.map((unit, i) => ({
+            unit,
+            propY0: propPositions[i].propY0,
+            propY1: propPositions[i].propY1,
+            eqY0: svStripTop + i * svEqualSlotH,
+            eqY1: svStripTop + (i + 1) * svEqualSlotH,
+          }));
+          for (const d of unitDrawData) splitViewUnitMap.set(d.unit.id, d);
+          splitViewData.push({ colConf, propX, connX, equalX, propW, connW, equalW, unitDrawData, stripTop: svStripTop, stripBottom: svStripBottom });
+          return;
+        }
+
         const levelUnits = allUnits.filter(u =>
           u.levelOrder === level && u.start !== null && visibleSet.has(u.id)
         ).map(u => ({ ...u, end: u.end ?? 0 }));
@@ -168,8 +225,25 @@ export default function TimelineCanvas({
           const waveBottom     = ext ? ext.waveBottom     : false;
           const y1 = scale(effectiveStart);
           const y2 = scale(effectiveEnd);
-          const y  = Math.min(y1, y2);
-          const h  = Math.abs(y2 - y1);
+          let y  = Math.min(y1, y2);
+          let h  = Math.abs(y2 - y1);
+
+          // Remap into parent's equal-size slot if a split-view ancestor exists
+          { let pid = unit.parent;
+            let svEntry = null;
+            while (pid) {
+              if (splitViewUnitMap.has(pid)) { svEntry = splitViewUnitMap.get(pid); break; }
+              const p = UNIT_MAP[pid]; if (!p) break; pid = p.parent;
+            }
+            if (svEntry) {
+              const pSpan = svEntry.propY1 - svEntry.propY0;
+              if (pSpan > 0) {
+                const ratio = (svEntry.eqY1 - svEntry.eqY0) / pSpan;
+                y = svEntry.eqY0 + (y - svEntry.propY0) * ratio;
+                h = h * ratio;
+              }
+            }
+          }
 
           if (y > viewH || y + h < 0) return;
 
@@ -344,6 +418,131 @@ export default function TimelineCanvas({
       }
       ctx.lineCap = "butt";
 
+      // ── Picks age→y remapping for split-view ──
+      // Use the coarsest split-view column to interpolate any age into its equal-size slot.
+      // This keeps all picks in proper visual order even when equal-size expands some slots.
+      const pickYForAge = (age) => {
+        if (!splitViewData.length) return scale(age);
+        const sv = splitViewData[0]; // coarsest (first processed) split-view level
+        for (const { unit, propY0, propY1, eqY0, eqY1 } of sv.unitDrawData) {
+          const lo = unit.end ?? 0;
+          const hi = unit.start;
+          if (age >= lo - 1e-9 && age <= hi + 1e-9) {
+            if (propY1 <= propY0 + 1e-9) return eqY0;
+            const t = Math.max(0, Math.min(1, (scale(age) - propY0) / (propY1 - propY0)));
+            return eqY0 + t * (eqY1 - eqY0);
+          }
+        }
+        return scale(age);
+      };
+
+      // ── Split-view columns ──
+      for (const sv of splitViewData) {
+        const { colConf, propX, connX, equalX, propW, connW, equalW, unitDrawData, stripTop, stripBottom } = sv;
+        const N = unitDrawData.length;
+        if (N === 0) continue;
+
+        // Fills — no stroke
+        for (const { unit, propY0, propY1, eqY0, eqY1 } of unitDrawData) {
+          ctx.fillStyle = unit.icsColor || "#ccc";
+          ctx.fillRect(propX, propY0, propW, propY1 - propY0);
+          ctx.beginPath();
+          ctx.moveTo(connX,          propY0);
+          ctx.lineTo(connX + connW,  eqY0);
+          ctx.lineTo(connX + connW,  eqY1);
+          ctx.lineTo(connX,          propY1);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillRect(equalX, eqY0, equalW, eqY1 - eqY0);
+        }
+
+        // Boundary lines — separate pass on top of fills
+        ctx.strokeStyle = "rgba(0,0,0,0.25)";
+        ctx.lineWidth = 0.75;
+        ctx.setLineDash([]);
+
+        // Top boundary (above unit 0)
+        {
+          const { propY0, eqY0 } = unitDrawData[0];
+          ctx.beginPath();
+          ctx.moveTo(propX,            propY0);
+          ctx.lineTo(connX,            propY0);
+          ctx.lineTo(connX + connW,    eqY0);
+          ctx.lineTo(equalX + equalW,  eqY0);
+          ctx.stroke();
+        }
+        // Interior boundaries
+        for (let i = 0; i < N - 1; i++) {
+          const { propY1, eqY1 } = unitDrawData[i];
+          ctx.beginPath();
+          ctx.moveTo(propX,            propY1);
+          ctx.lineTo(connX,            propY1);
+          ctx.lineTo(connX + connW,    eqY1);
+          ctx.lineTo(equalX + equalW,  eqY1);
+          ctx.stroke();
+        }
+        // Bottom boundary (below unit N-1)
+        {
+          const { propY1, eqY1 } = unitDrawData[N - 1];
+          ctx.beginPath();
+          ctx.moveTo(propX,            propY1);
+          ctx.lineTo(connX,            propY1);
+          ctx.lineTo(connX + connW,    eqY1);
+          ctx.lineTo(equalX + equalW,  eqY1);
+          ctx.stroke();
+        }
+
+        // Outer column box — matches the proportional strip's actual extent
+        ctx.beginPath(); ctx.moveTo(propX,           stripTop);    ctx.lineTo(propX,           stripBottom); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(equalX + equalW, stripTop);    ctx.lineTo(equalX + equalW, stripBottom); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(propX,           stripTop);    ctx.lineTo(equalX + equalW, stripTop);    ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(propX,           stripBottom); ctx.lineTo(equalX + equalW, stripBottom); ctx.stroke();
+
+        // Labels in equal-size strip
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        for (const { unit, eqY0, eqY1 } of unitDrawData) {
+          const ts = unit.displayName;
+          const st = unit.displayNameStratigraphic;
+          const labelText = labelMode === "stratigraphic" ? (st || ts)
+            : labelMode === "both" && st ? `${ts} / ${st}`
+            : ts;
+
+          const words = (labelText || "").trim().split(/\s+/).filter(Boolean);
+          if (!words.length) continue;
+
+          const slotH = eqY1 - eqY0;
+          const matchingRule = fontRules.find(r =>
+            unit.start !== null && unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
+          );
+          const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+          const { lines, fitSize } = computeFitAndWrap(words, equalW, slotH, fontFamily, blockFontSize, 5);
+
+          ctx.font = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}${fitSize}px ${fontFamily}`;
+          ctx.fillStyle = contrastText ? contrastColor(unit.icsColor) : "black";
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(equalX, eqY0, equalW, slotH);
+          ctx.clip();
+
+          const labelCx = equalX + equalW / 2;
+          const labelCy = eqY0 + slotH / 2;
+          const lineH = fitSize * 1.2;
+          const startLabelY = labelCy - ((lines.length - 1) / 2) * lineH;
+          lines.forEach((line, j) => ctx.fillText(line, labelCx, startLabelY + j * lineH));
+
+          ctx.restore();
+        }
+
+        // Hitboxes — proportional strip and equal-size strip (skip connector)
+        for (const { unit, propY0, propY1, eqY0, eqY1 } of unitDrawData) {
+          hitBoxes.push({ id: unit.id, x: propX,  y: propY0, w: propW,  h: propY1 - propY0 });
+          hitBoxes.push({ id: unit.id, x: equalX, y: eqY0,   w: equalW, h: eqY1 - eqY0 });
+        }
+      }
+
       // ── Time axis ──
       const timeColumn = frameLayout.find(col => col.id === "time");
       if (timeColumn) {
@@ -511,7 +710,7 @@ export default function TimelineCanvas({
         ctx.textBaseline = "middle";
 
         boundaryAges.forEach(({ age, uncertainty, approximate }) => {
-          const pos = scale(age);
+          const pos = pickYForAge(age);
           if (pos < eM - 2 || pos > viewH + 2) return;
 
           const approxText = (showUncertainty && approximate) ? "\u007E" : "";
