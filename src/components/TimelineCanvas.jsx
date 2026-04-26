@@ -30,8 +30,10 @@ function buildWaveSegments(x, y, width, amp, period) {
 
 function buildWaveSegmentsRTL(x, y, width, amp, period) {
   const half = period / 2;
+  const N = Math.ceil(width / half);
   const segs = [];
-  let cx = x + width, flip = 1;
+  let cx = x + width;
+  let flip = (N % 2 === 0) ? -1 : 1;
   while (cx > x) {
     const ex = Math.max(cx - half, x);
     segs.push({ cpx: (cx + ex) / 2, cpy: y - amp * flip, ex });
@@ -96,9 +98,8 @@ export default function TimelineCanvas({
 
       const allUnits   = effectiveUnits;
       const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
-      const effectiveExtents = buildEffectiveExtents(allUnits, visibleSet);
-
       const visLevels = columnConfig.filter(c => c.visible).map(c => c.level).sort((a, b) => a - b);
+      const effectiveExtents = buildEffectiveExtents(allUnits, visibleSet, visLevels);
       const cols = [
         { id: "time", type: "time" },
         ...visLevels.map(lv => ({ id: lv, type: "hierarchy", level: lv })),
@@ -125,6 +126,9 @@ export default function TimelineCanvas({
         const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
         return luma > 0.65 ? "black" : "white";
       };
+
+      const collectedBlocks = [];
+      const waveEdges = [];
 
       visLevels.forEach(level => {
         const colConf = columnConfig.find(c => c.level === level);
@@ -181,82 +185,15 @@ export default function TimelineCanvas({
           const h  = Math.abs(y2 - y1);
 
           if (y > viewH || y + h < 0) return;
-          hitBoxes.push({ id: unit.id, x, y, w, h });
 
-          if (!waveTop && !waveBottom) {
-            // ── fast path ──
-            ctx.fillStyle = unit.icsColor || "#cccccc";
-            ctx.fillRect(x, y, w, h);
-            ctx.strokeStyle = "rgba(0,0,0,0.4)";
-            ctx.lineWidth = 0.5;
-            ctx.strokeRect(x, y, w, h);
-          } else {
-            // ── cropped block with wave edges ──
-
-            // 1. White background
-            ctx.fillStyle = "white";
-            ctx.fillRect(x, y, w, h);
-
-            // 2. Colored fill clipped to wave-bounded path
-            ctx.save();
-            ctx.beginPath();
-            if (waveTop) {
-              const segs = buildWaveSegments(x, y, w, WAVE_AMP, WAVE_PERIOD);
-              ctx.moveTo(x, y);
-              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y));
-            } else {
-              ctx.moveTo(x, y);
-              ctx.lineTo(x + w, y);
-            }
-            ctx.lineTo(x + w, y + h);
-            if (waveBottom) {
-              const segs = buildWaveSegmentsRTL(x, y + h, w, WAVE_AMP, WAVE_PERIOD);
-              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y + h));
-            } else {
-              ctx.lineTo(x, y + h);
-            }
-            ctx.closePath();
-            ctx.fillStyle = unit.icsColor || "#cccccc";
-            ctx.fill();
-            ctx.restore();
-
-            // 3. Straight borders on non-waved edges only
-            ctx.strokeStyle = "rgba(0,0,0,0.4)";
-            ctx.lineWidth = 0.5;
-            ctx.setLineDash([]);
-            ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + h); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(x + w, y); ctx.lineTo(x + w, y + h); ctx.stroke();
-            if (!waveTop) {
-              ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
-            }
-            if (!waveBottom) {
-              ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x + w, y + h); ctx.stroke();
-            }
-
-            // 4. Wavy dashed stroke on waved edges (drawn last, on top)
-            ctx.strokeStyle = "rgba(0,0,0,0.55)";
-            ctx.lineWidth = 1.5;
-            ctx.lineCap = "round";
-            ctx.setLineDash([6, 4]);
-            if (waveTop) {
-              const segs = buildWaveSegments(x, y, w, WAVE_AMP, WAVE_PERIOD);
-              ctx.beginPath();
-              ctx.moveTo(x, y);
-              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y));
-              ctx.stroke();
-            }
-            if (waveBottom) {
-              const segs = buildWaveSegments(x, y + h, w, WAVE_AMP, WAVE_PERIOD);
-              ctx.beginPath();
-              ctx.moveTo(x, y + h);
-              segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y + h));
-              ctx.stroke();
-            }
-            // ALWAYS restore line state
-            ctx.setLineDash([]);
-            ctx.lineCap = "butt";
-          }
-
+          const matchingRule = fontRules.find(r =>
+            unit.start !== null && unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
+          );
+          const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+          const leftmostHierarchyStart = frameLayout.find(col => col.id !== "time" && col.id !== "picks")?.start ?? x;
+          const orientWidth = !hasVisibleParent
+            ? (spanColumns[spanColumns.length - 1].end - leftmostHierarchyStart)
+            : w;
           const labelText = (() => {
             const ts = unit.displayName;
             const st = unit.displayNameStratigraphic;
@@ -264,60 +201,156 @@ export default function TimelineCanvas({
             if (labelMode === "both" && st) return `${ts} / ${st}`;
             return ts;
           })();
-          const words = (labelText || "").trim().split(/\s+/).filter(Boolean);
-          if (!words.length) return;
 
-          const matchingRule = fontRules.find(r =>
-            unit.start !== null && unit.start <= r.maxAge && (unit.end ?? 0) >= r.minAge
-          );
-          const blockFontSize = matchingRule?.fontSize ?? colConf?.fontSize ?? fontSize;
+          collectedBlocks.push({
+            unit, x, w, y, h, waveTop, waveBottom,
+            colConf, hasVisibleParent, orientWidth,
+            labelText, blockFontSize,
+          });
+          if (waveTop)    waveEdges.push({ x, w, y,       side: 'top' });
+          if (waveBottom) waveEdges.push({ x, w, y: y + h, side: 'bottom' });
+        });
+      });
 
-          const leftmostHierarchyStart = frameLayout.find(col => col.id !== "time" && col.id !== "picks")?.start ?? x;
-          const orientWidth = !hasVisibleParent
-            ? (spanColumns[spanColumns.length - 1].end - leftmostHierarchyStart)
-            : w;
+      // ── Compute wave groups and fill-origin map ──
+      const waveGroups = new Map();
+      for (const e of waveEdges) {
+        const key = e.y.toFixed(1);
+        if (!waveGroups.has(key)) waveGroups.set(key, { y: e.y, minX: e.x, maxX: e.x + e.w });
+        else {
+          const g = waveGroups.get(key);
+          g.minX = Math.min(g.minX, e.x);
+          g.maxX = Math.max(g.maxX, e.x + e.w);
+        }
+      }
+      const waveOriginByBlock = new Map();
+      for (const e of waveEdges) {
+        const group = waveGroups.get(e.y.toFixed(1));
+        if (e.side === 'top')
+          waveOriginByBlock.set(`top,${e.x.toFixed(1)},${e.y.toFixed(1)}`, group.minX);
+        else
+          waveOriginByBlock.set(`bot,${e.x.toFixed(1)},${e.y.toFixed(1)}`, group.minX);
+      }
 
-          const blockOrient = colConf?.orientation ?? "auto";
-          const resolvedOrient = blockOrient === "auto"
-            ? (orientWidth >= h ? "horizontal" : "vertical")
-            : blockOrient;
+      // ── Draw collected blocks ──
+      for (const b of collectedBlocks) {
+        const { unit, x, w, y, h, waveTop, waveBottom } = b;
 
-          const [fitW, fitH] = resolvedOrient === "vertical" ? [h, w] : [w, h];
-          const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
+        hitBoxes.push({ id: unit.id, x, y, w, h });
 
-          const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, fontFamily, blockFontSize, 5);
+        if (!waveTop && !waveBottom) {
+          ctx.fillStyle = unit.icsColor || "#cccccc";
+          ctx.fillRect(x, y, w, h);
+          ctx.strokeStyle = "rgba(0,0,0,0.4)";
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(x, y, w, h);
+        } else {
+          // White background
+          ctx.fillStyle = "white";
+          ctx.fillRect(x, y, w, h);
 
-          const fontPrefix = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}`;
-          ctx.font = `${fontPrefix}${fitSize}px ${fontFamily}`;
-          ctx.fillStyle = contrastText ? contrastColor(unit.icsColor) : "black";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-
-          const cx = x + w / 2;
-          const cy = y + h / 2;
-
+          // Colored fill — wave origin from group minX so it matches the stroke
           ctx.save();
           ctx.beginPath();
           ctx.rect(x, y, w, h);
           ctx.clip();
 
-          if (resolvedOrient === "vertical") {
-            ctx.save();
-            ctx.translate(cx, cy);
-            ctx.rotate(-Math.PI / 2);
-            ctx.fillText(lines[0] || "", 0, 0);
-            ctx.restore();
+          ctx.fillStyle = unit.icsColor || "#cccccc";
+          ctx.beginPath();
+
+          if (waveTop) {
+            const originX = waveOriginByBlock.get(`top,${x.toFixed(1)},${y.toFixed(1)}`) ?? x;
+            const segs = buildWaveSegments(originX, y, (x + w) - originX, WAVE_AMP, WAVE_PERIOD);
+            ctx.moveTo(originX, y);
+            segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y));
           } else {
-            const lineH = fitSize * 1.2;
-            const startY = cy - ((lines.length - 1) / 2) * lineH;
-            lines.forEach((line, i) => {
-              ctx.fillText(line, cx, startY + i * lineH);
-            });
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + w, y);
           }
 
+          ctx.lineTo(x + w, y + h);
+
+          if (waveBottom) {
+            const originX = waveOriginByBlock.get(`bot,${x.toFixed(1)},${(y + h).toFixed(1)}`) ?? x;
+            const segs = buildWaveSegmentsRTL(originX, y + h, (x + w) - originX, WAVE_AMP, WAVE_PERIOD);
+            segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y + h));
+          } else {
+            ctx.lineTo(x, y + h);
+          }
+
+          ctx.closePath();
+          ctx.fill();
           ctx.restore();
-        });
-      });
+
+          // Straight borders on non-waved edges
+          ctx.strokeStyle = "rgba(0,0,0,0.4)";
+          ctx.lineWidth = 0.5;
+          ctx.setLineDash([]);
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + h); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(x + w, y); ctx.lineTo(x + w, y + h); ctx.stroke();
+          if (!waveTop)    { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke(); }
+          if (!waveBottom) { ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x + w, y + h); ctx.stroke(); }
+        }
+
+        // Label
+        const words = (b.labelText || "").trim().split(/\s+/).filter(Boolean);
+        if (!words.length) continue;
+
+        const blockOrient = b.colConf?.orientation ?? "auto";
+        const resolvedOrient = blockOrient === "auto"
+          ? (b.orientWidth >= h ? "horizontal" : "vertical")
+          : blockOrient;
+
+        const [fitW, fitH] = resolvedOrient === "vertical" ? [h, w] : [w, h];
+        const fitWords = resolvedOrient === "vertical" ? [words.join(" ")] : words;
+
+        const { lines, fitSize } = computeFitAndWrap(fitWords, fitW, fitH, fontFamily, b.blockFontSize, 5);
+
+        const fontPrefix = `${fontBold ? "bold " : ""}${fontItalic ? "italic " : ""}`;
+        ctx.font = `${fontPrefix}${fitSize}px ${fontFamily}`;
+        ctx.fillStyle = contrastText ? contrastColor(unit.icsColor) : "black";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        const cx = x + w / 2;
+        const cy = y + h / 2;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+
+        if (resolvedOrient === "vertical") {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillText(lines[0] || "", 0, 0);
+          ctx.restore();
+        } else {
+          const lineH = fitSize * 1.2;
+          const startY = cy - ((lines.length - 1) / 2) * lineH;
+          lines.forEach((line, i) => {
+            ctx.fillText(line, cx, startY + i * lineH);
+          });
+        }
+
+        ctx.restore();
+      }
+
+      // ── Wave stroke post-pass ──
+      // Draws each group as a single continuous path spanning all adjacent cropped columns.
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = "round";
+      ctx.setLineDash([]);
+      for (const { y: wy, minX, maxX } of waveGroups.values()) {
+        const segs = buildWaveSegments(minX, wy, maxX - minX, WAVE_AMP, WAVE_PERIOD);
+        ctx.beginPath();
+        ctx.moveTo(minX, wy);
+        segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, wy));
+        ctx.stroke();
+      }
+      ctx.lineCap = "butt";
 
       // ── Time axis ──
       const timeColumn = frameLayout.find(col => col.id === "time");

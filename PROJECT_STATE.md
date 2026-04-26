@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-25 (session 20)*
+*Last Updated: 2026-04-25 (session 32)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,81 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 32 — Fix buildWaveSegmentsRTL starting flip to match the corresponding LTR wave.**
+
+- **Bug**: `buildWaveSegmentsRTL` always started with `flip=1`, producing a mirror-image wave that didn't match the LTR stroke's last segment. The correct starting flip for N segments is `(N % 2 === 0) ? -1 : 1` where `N = Math.ceil(width / half)`.
+- **Fix**: updated `buildWaveSegmentsRTL` in `TimelineCanvas.jsx` and `svgWavePathRTL` in `BlockRenderer.js` to compute N and set the initial flip accordingly. The waveBottom fill call site (using `buildWaveSegmentsRTL`) is unchanged from session 31.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 31 — Fix waveBottom fill: LTR segments traced in reverse to match stroke post-pass exactly.**
+
+- **Bug**: the waveBottom fill path used `buildWaveSegmentsRTL`, which produces a mirror-image wave (different bezier control point positions) compared to `buildWaveSegments` used by the stroke post-pass. Fill and stroke diverged visually on bottom crop edges.
+- **Fix**: replaced `buildWaveSegmentsRTL` in the fill path with `buildWaveSegments` (LTR), then traced the resulting segments in reverse order (`for i = segs.length-1 downto 0`), recovering the previous endpoint as `segs[i-1].ex` (or `originX` at the leftmost segment). This closes the fill path RTL while following the exact same bezier curves as the stroke.
+- `buildWaveSegmentsRTL` was now unused in `TimelineCanvas.jsx` and removed. `svgWavePathRTL` in `BlockRenderer.js` is a separate function and unchanged.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 30 — Fill wave origin now matches stroke wave origin via two-pass block collection.**
+
+- **Problem**: session 29's `waveSegStart(x)` computed each column's fill origin independently, but the stroke post-pass uses `minX` (the leftmost x across the entire group). For any non-leftmost column, the two origins differed and the fill wave still didn't match the stroke.
+- **Fix**: restructured `drawFrame` into two passes. Pass 1 (`visLevels.forEach`): compute block geometry, collect into `collectedBlocks[]` and `waveEdges[]` — no drawing. After the forEach: compute `waveGroups` (same as before) and build `waveOriginByBlock` — a map from `"top|bot,x,y"` → `group.minX` so each block can look up the correct wave origin. Pass 2 (draw loop over `collectedBlocks`): draw fills and labels using `waveOriginByBlock` for the wave origin, then wave stroke post-pass uses the already-computed `waveGroups`. `waveSegStart` helper removed (no longer needed). `hitBoxes.push` moved to the draw loop.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 28 — Wave strokes drawn as continuous paths spanning all adjacent cropped columns.**
+
+- **Root cause of column-boundary blips**: drawing wave strokes per-column caused a discontinuity at each boundary: the wave reset its phase at `x` with `flip=1`, so adjacent columns started different half-periods at the join.
+- **Fix**: `buildWaveSegments` and `buildWaveSegmentsRTL` reverted to simple forms (start fresh at `x`/`x+width` with `flip=1`). Inline wave stroke drawing removed from the block loop entirely. After the `visLevels.forEach` block completes, a post-pass collects all `waveEdges` entries into a `Map` keyed by `y.toFixed(1)`, merging their x-spans into `{minX, maxX}`. Each group is then drawn as a single continuous `quadraticCurveTo` path from `minX` to `maxX`, so adjacent cropped columns share one unbroken wave stroke with no per-column restarts.
+- `svgWavePath` and `svgWavePathRTL` in `BlockRenderer.js` likewise reverted to simple forms (phase-anchoring code removed).
+
+Lint: 0 errors / 0 warnings.
+
+**Session 26 — Change wave crop edge stroke from dashed to solid.**
+
+- `TimelineCanvas.jsx`: `ctx.setLineDash([6, 4])` → `ctx.setLineDash([])` before the wave stroke pass.
+- `BlockRenderer.js`: removed `p.setAttribute("stroke-dasharray", "6,4")` from the SVG wave stroke path.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 25 — Fix: walk all visible levels to find direct children, not just the immediate next level.**
+
+- **Bug**: `buildEffectiveExtents` searched for direct column-children only at the single immediate next `visLevel` below a unit. When that level had no children for the unit (e.g. Jurassic has no Sub-Period children — Early/Middle/Late Jurassic are remapped to Epoch/level 5), `directChildren` was empty and the function fell into the "all children visible" branch, skipping the crop entirely.
+- **Fix**: replaced the single `visLevels.find(lv > unit.levelOrder)` lookup and `directChildren` filter with a loop that walks all `visLevels` below the unit's level in order, stopping at the first level that yields at least one direct child. The leaf guard (`nextLevel === null`) is replaced by `foundLevel === null` after the loop. All downstream logic (visible/hidden split, sibling check, wave computation) is unchanged.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 24 — Fix: align waveBottom stroke direction with fill path.**
+
+- **Bug**: in `drawFrame` (step 4 of the waved-block render), the `waveBottom` stroke used `buildWaveSegments` (LTR, starting from `x`) while the fill path (step 2) used `buildWaveSegmentsRTL` (RTL, starting from `x + w`). Opposite start points produce different wave shapes, causing fill/stroke misalignment visible when column width changes.
+- **Fix**: changed the `waveBottom` stroke block to use `buildWaveSegmentsRTL` starting from `x + w`, matching the fill path exactly. One-line change in `TimelineCanvas.jsx`.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 23 — Fix: suppress wave edge when a visible same-level sibling covers the gap.**
+
+- **Bug**: `buildEffectiveExtents` applied `waveBottom`/`waveTop` on an edge whenever visible children didn't cover a unit's full range, even when a visible sibling at the same `levelOrder` had an effective extent that already covered that boundary. Example: hiding Triassic caused Mesozoic to show a waved old edge, even though Paleozoic (same level, fully visible) abuts that exact boundary.
+- **Fix**: after computing `descMaxAge`/`descMinAge` from visible children, a sibling-coverage check runs before setting `waveBottom`/`waveTop`. Collects all visible same-level units (`sameLevelVisible`), checks if any sibling's effective extent starts at or beyond `descMaxAge` (suppresses `waveBottom`) or ends at or before `descMinAge` (suppresses `waveTop`). Wave flags only fire when no sibling covers the gap. Limitation: same-level siblings are processed in arbitrary order, so `extents.get(sib.id)` may not be populated yet for an unprocessed sibling — falls back to the sibling's raw `start`/`end`, which is conservative (avoids false crops, may rarely miss suppressing a wave).
+- No other files changed.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 22 — Fix: scope crop decisions to direct column-level children only.**
+
+- **Bug**: `buildEffectiveExtents` scanned all visible descendants at any depth to decide whether to crop an ancestor unit. This caused false cropping: e.g. hiding Cambrian triggered Phanerozoic to crop its old edge, even though Paleozoic (its direct Era-level child) was fully visible and covered the full range.
+- **Fix**: `buildEffectiveExtents` now accepts a third parameter `visLevels` (sorted array of visible column level numbers). For each unit it finds the next visible column level below and looks only at direct children at that level — where "direct" means the nearest visible-level ancestor walking up from the child is the unit itself. If all direct column-level children are visible, no crop occurs regardless of hidden grandchildren. If some are hidden, the unit crops to the union of its visible column-level children's effective extents (already cascaded, since finest-first processing guarantees children are computed first).
+- **Call sites updated**: `drawFrame` in `TimelineCanvas.jsx` (reordered `visLevels` before the call), `buildSVGForExport` in `App.jsx`, and the `dynamicMinAge/dynamicMaxAge` useMemo in `App.jsx` — all now pass `visLevels` as the third argument.
+
+Lint: 0 errors / 0 warnings.
+
+**Session 21 — Fix: remove gapOccupied guard so crop propagates to all ancestor levels.**
+
+- **Bug**: `buildEffectiveExtents` in `src/lib/cropEdges.js` had a `gapOccupied` guard on both the `waveBottom` and `waveTop` crop decisions. The guard checked whether any other visible unit occupied the gap between a unit's own extent and its descendants' extent. It incorrectly fired when ancestor/peer units (e.g. Proterozoic when processing Precambrian) were themselves visible — they satisfied the gap condition, suppressing the crop. Result: only one level of cropping propagated instead of cascading all the way up.
+- **Fix**: removed both `gapOccupied` blocks. Crop now always occurs when visible descendants don't cover the full unit range. Replaced the two guarded `if` blocks with: `const waveBottom = descMaxAge < unit.start; const effectiveStart = waveBottom ? descMaxAge : unit.start;` and `const waveTop = descMinAge > unitEnd; const effectiveEnd = waveTop ? descMinAge : unitEnd;`
+- No other files changed.
+
+Lint: 0 errors / 0 warnings.
 
 **Session 20 — Cascading crop: buildEffectiveExtents replaces computeCropEdges.**
 

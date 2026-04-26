@@ -240,7 +240,7 @@ function App() {
     if (visible.length === 0) return { dynamicMinAge: ICS_MIN_AGE, dynamicMaxAge: ICS_MAX_AGE };
     let minAge = Infinity, maxAge = -Infinity;
     const visibleSetForCrop = new Set(visible.map(u => u.id));
-    const cropExtents = buildEffectiveExtents(effectiveUnits, visibleSetForCrop);
+    const cropExtents = buildEffectiveExtents(effectiveUnits, visibleSetForCrop, visLevels.slice().sort((a, b) => a - b));
     for (const u of visible) {
       const ext = cropExtents.get(u.id);
       const eStart = ext ? ext.effectiveStart : u.start;
@@ -306,7 +306,7 @@ function App() {
 
     const allUnits   = effectiveUnits;
     const visibleSet = new Set(allUnits.filter(u => u.start !== null && isUnitVisible(u.id, hiddenUnits)).map(u => u.id));
-    const svgCropExtents = buildEffectiveExtents(allUnits, visibleSet);
+    const svgCropExtents = buildEffectiveExtents(allUnits, visibleSet, visLevels);
     const scaleUnits = scaleType === "equalSize"
       ? effectiveUnits.filter(u => isUnitVisible(u.id, hiddenUnits))
       : allUnits;

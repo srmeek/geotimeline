@@ -14,7 +14,8 @@ function svgWavePath(x, y, width, amp, period) {
 
 function svgWavePathRTL(x, y, width, amp, period) {
   const half = period / 2;
-  let cx = x + width, flip = 1, d = "";
+  const N = Math.ceil(width / half);
+  let cx = x + width, flip = (N % 2 === 0) ? -1 : 1, d = "";
   while (cx > x) {
     const ex = Math.max(cx - half, x);
     d += `Q${(cx + ex) / 2},${y - amp * flip} ${ex},${y} `;
@@ -116,16 +117,30 @@ export function renderBlocks({
       if (block.unitId) bg.setAttribute("data-unit-id", block.unitId);
       svg.appendChild(bg);
 
+      // Clip fill to block bounds so wave beziers starting left of bx are hidden
+      const fillClipId = `wave-clip-${block.unitId || Math.random().toString(36).slice(2)}`;
+      const clipPath = document.createElementNS("http://www.w3.org/2000/svg", "clipPath");
+      clipPath.setAttribute("id", fillClipId);
+      const clipRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      clipRect.setAttribute("x", bx); clipRect.setAttribute("y", by);
+      clipRect.setAttribute("width", bw); clipRect.setAttribute("height", bh);
+      clipPath.appendChild(clipRect);
+      svg.appendChild(clipPath);
+
+      // Compute the mathematical wave segment start (may be left of bx)
+      const waveHalf = WAVE_PERIOD / 2;
+      const ss = bx - (((bx % WAVE_PERIOD) + WAVE_PERIOD) % WAVE_PERIOD % waveHalf);
+
       // Colored fill path bounded by wave edges
       let fillD = "";
       if (block.waveTop) {
-        fillD += `M${bx},${by} ` + svgWavePath(bx, by, bw, WAVE_AMP, WAVE_PERIOD);
+        fillD += `M${ss},${by} ` + svgWavePath(ss, by, (bx + bw) - ss, WAVE_AMP, WAVE_PERIOD);
       } else {
         fillD += `M${bx},${by} L${bx + bw},${by} `;
       }
       fillD += `L${bx + bw},${by + bh} `;
       if (block.waveBottom) {
-        fillD += svgWavePathRTL(bx, by + bh, bw, WAVE_AMP, WAVE_PERIOD);
+        fillD += svgWavePathRTL(ss, by + bh, (bx + bw) - ss, WAVE_AMP, WAVE_PERIOD);
       } else {
         fillD += `L${bx},${by + bh} `;
       }
@@ -133,6 +148,7 @@ export function renderBlocks({
       const fillPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
       fillPath.setAttribute("d", fillD);
       fillPath.setAttribute("fill", block.fill);
+      fillPath.setAttribute("clip-path", `url(#${fillClipId})`);
       svg.appendChild(fillPath);
 
       // Straight borders on non-waved edges
@@ -157,7 +173,7 @@ export function renderBlocks({
         p.setAttribute("stroke", "rgba(0,0,0,0.55)");
         p.setAttribute("stroke-width", "1.5");
         p.setAttribute("stroke-linecap", "round");
-        p.setAttribute("stroke-dasharray", "6,4");
+
         svg.appendChild(p);
       };
       if (block.waveTop)    addWaveStroke(`M${bx},${by} `    + svgWavePath(bx, by,    bw, WAVE_AMP, WAVE_PERIOD));
