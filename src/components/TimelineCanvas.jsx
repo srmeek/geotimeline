@@ -28,19 +28,6 @@ function buildWaveSegments(x, y, width, amp, period) {
   return segs;
 }
 
-function buildWaveSegmentsRTL(x, y, width, amp, period) {
-  const half = period / 2;
-  const N = Math.ceil(width / half);
-  const segs = [];
-  let cx = x + width;
-  let flip = (N % 2 === 0) ? -1 : 1;
-  while (cx > x) {
-    const ex = Math.max(cx - half, x);
-    segs.push({ cpx: (cx + ex) / 2, cpy: y - amp * flip, ex });
-    cx = ex; flip = -flip;
-  }
-  return segs;
-}
 
 export default function TimelineCanvas({
   canvasRef, hitBoxesRef, rafHandleRef,
@@ -272,8 +259,11 @@ export default function TimelineCanvas({
 
           if (waveBottom) {
             const originX = waveOriginByBlock.get(`bot,${x.toFixed(1)},${(y + h).toFixed(1)}`) ?? x;
-            const segs = buildWaveSegmentsRTL(originX, y + h, (x + w) - originX, WAVE_AMP, WAVE_PERIOD);
-            segs.forEach(s => ctx.quadraticCurveTo(s.cpx, s.cpy, s.ex, y + h));
+            const segs = buildWaveSegments(originX, y + h, (x + w) - originX, WAVE_AMP, WAVE_PERIOD);
+            for (let i = segs.length - 1; i >= 0; i--) {
+              const endX = i === 0 ? originX : segs[i - 1].ex;
+              ctx.quadraticCurveTo(segs[i].cpx, segs[i].cpy, endX, y + h);
+            }
           } else {
             ctx.lineTo(x, y + h);
           }

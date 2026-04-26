@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-25 (session 32)*
+*Last Updated: 2026-04-25 (session 33)*
 
 ------------------------------------------------------------------------
 
@@ -12,6 +12,14 @@ scrollbar, initial centering, and zoom-out headroom added in Session 10;
 two blank-screen bugs fixed in Session 11; scrollbar live-update and
 zoom-out headroom wired correctly in Session 12. Reset padding moved to
 viewport-pixel-fraction space in Session 13.
+
+**Session 33 — Fix waveBottom fill: reversed LTR segments; remove unused buildWaveSegmentsRTL.**
+
+- **Bug 1**: `buildWaveSegmentsRTL` N-based flip (session 32) was already written to disk correctly — confirmed present.
+- **Bug 2**: the waveBottom fill was still calling `buildWaveSegmentsRTL`, which produces different bezier control points than `buildWaveSegments` regardless of flip. The stroke post-pass draws the bottom wave LTR; the fill must trace the same curves in reverse.
+- **Fix**: replaced the `buildWaveSegmentsRTL` call in the waveBottom fill path with `buildWaveSegments` (LTR) iterated in reverse — `for i = segs.length-1 downto 0`, endpoint is `segs[i-1].ex` (or `originX` for `i===0`). Reversing a quadratic bezier P0→CP→P1 gives P1→CP→P0, identical curve. `buildWaveSegmentsRTL` became unused and was removed from `TimelineCanvas.jsx`.
+
+Lint: 0 errors / 0 warnings.
 
 **Session 32 — Fix buildWaveSegmentsRTL starting flip to match the corresponding LTR wave.**
 
