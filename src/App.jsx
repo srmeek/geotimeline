@@ -1776,6 +1776,20 @@ function App() {
                     Reset All Edits ({Object.keys(unitEdits).length})
                   </button>
                 )}
+
+                <div style={{ height: 1, background: "var(--gt-border-subtle)", margin: "12px 0" }} />
+                <div className="gt-card__header" style={{ marginBottom: 8 }}>Testing</div>
+                <button
+                  onClick={() => {
+                    localStorage.removeItem("gt_prefs");
+                    localStorage.removeItem("gt_unitEdits");
+                    window.location.reload();
+                  }}
+                  className="gt-btn gt-btn--danger"
+                  style={{ width: "100%", justifyContent: "center" }}
+                >
+                  Reset to Defaults
+                </button>
               </div>
             )}
           </div>

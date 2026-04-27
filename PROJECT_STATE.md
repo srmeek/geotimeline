@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-26 (session 36)*
+*Last Updated: 2026-04-26 (session 37)*
 
 ------------------------------------------------------------------------
 
@@ -38,6 +38,12 @@ viewport-pixel-fraction space in Session 13.
 
 - No changes to `makeScale`, `buildScale`, `computeLayout`, `scale.js`, time axis, GSSP, or wave-crop rendering.
 - SVG export for split-view columns deferred.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
+
+**Session 37 — Reset to Defaults button (testing utility).**
+
+- **`App.jsx`**: added a "Testing" section in the Export tab (right settings panel) containing a danger-styled "Reset to Defaults" button. Clicking it calls `localStorage.removeItem("gt_prefs")`, `localStorage.removeItem("gt_unitEdits")`, then `window.location.reload()`. The page reload is required because `_initPrefs` and `_initUnitEdits` are module-level IIFEs that only run once at load time — resetting React state alone would leave stale initializer values.
 
 Lint: 0 errors / 0 warnings. Tests: 44/44.
 
