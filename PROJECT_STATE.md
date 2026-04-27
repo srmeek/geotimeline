@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-*Last Updated: 2026-04-26 (session 35, refinements 1–3)*
+*Last Updated: 2026-04-26 (session 36)*
 
 ------------------------------------------------------------------------
 
@@ -38,6 +38,20 @@ viewport-pixel-fraction space in Session 13.
 
 - No changes to `makeScale`, `buildScale`, `computeLayout`, `scale.js`, time axis, GSSP, or wave-crop rendering.
 - SVG export for split-view columns deferred.
+
+Lint: 0 errors / 0 warnings. Tests: 44/44.
+
+**Session 36 — Fix: equal-size slot heights compress when zoomed in on a split-view column.**
+
+- **Root cause** (`TimelineCanvas.jsx`): `svStripTop`/`svStripBottom` were derived as `Math.min/max` of `propPositions[i].propY0/propY1`. Those values come from `scale(effectiveStart/End)`, which uses `effectiveExtents` (cropped for hidden descendants). When hidden descendants narrow a unit's effective extent, `propY1` is smaller than `scale(unit.start)`, compressing `svStripBottom` and therefore all equal-size slot heights. Zooming in also places units' proportional positions outside `[eM, viewH]` but the same mechanism (off-screen or cropped propY values driving the min/max) caused compression.
+- **Fix**: Replaced the min/max of propPositions with stable age-based anchors:
+  - `levelExtentEnd = levelUnitsForSplit[0].end ?? 0` (youngest unit's raw end age — top of strip)
+  - `levelExtentStart = levelUnitsForSplit[length-1].start` (oldest unit's raw start age — bottom of strip)
+  - `rawStripTop = Math.min(scale(levelExtentEnd), scale(levelExtentStart))`
+  - `rawStripBottom = Math.max(scale(levelExtentEnd), scale(levelExtentStart))`
+  - `levelUnitsForSplit` is sorted by `a.end - b.end` ascending, so index 0 = youngest and `length-1` = oldest — confirmed in code before applying.
+- **Daughter columns caveat**: for daughter split-view levels (where a parent split-view exists in `splitViewUnitMap`), the raw strip anchors are remapped into the parent's equal-size slot space using the same parent-chain walk and linear transform that `propPositions` applies to individual unit boundaries. Two independent lookups: `topSvEntry` (from youngest unit's parent chain) and `botSvEntry` (from oldest unit's parent chain) — they can be different Era entries when periods span multiple eras.
+- **No changes** to `propPositions`, `unitDrawData`, `splitViewUnitMap`, or any rendering code. The `propY0/propY1` values in `unitDrawData` remain as-is (they draw the proportional strip and trapezoid connectors).
 
 Lint: 0 errors / 0 warnings. Tests: 44/44.
 

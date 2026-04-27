@@ -161,8 +161,54 @@ export default function TimelineCanvas({
             }
             return { propY0, propY1 };
           });
-          const svStripTop    = propPositions.length ? Math.min(...propPositions.map(p => p.propY0)) : 0;
-          const svStripBottom = propPositions.length ? Math.max(...propPositions.map(p => p.propY1)) : 0;
+          // Anchor the equal-size strip to the full age span of this level's units,
+          // not to the min/max of viewport-pixel propPositions. This keeps slot heights
+          // stable during zoom/pan even when some units scroll off-screen.
+          // Sort order: a.end - b.end ascending → [0] has the youngest end (smallest age),
+          // [length-1] has the oldest start (largest age).
+          const levelExtentEnd   = levelUnitsForSplit[0]?.end ?? 0;
+          const levelExtentStart = levelUnitsForSplit.length
+            ? levelUnitsForSplit[levelUnitsForSplit.length - 1].start
+            : 0;
+          let rawStripTop    = Math.min(scale(levelExtentEnd), scale(levelExtentStart));
+          let rawStripBottom = Math.max(scale(levelExtentEnd), scale(levelExtentStart));
+
+          // For daughter split-view columns, apply the same parent-chain remap to the
+          // strip anchors that propPositions applies to individual unit boundaries.
+          const topSvEntry = (() => {
+            if (!levelUnitsForSplit.length) return null;
+            let pid = levelUnitsForSplit[0].parent;
+            while (pid) {
+              if (splitViewUnitMap.has(pid)) return splitViewUnitMap.get(pid);
+              const p = UNIT_MAP[pid]; if (!p) break; pid = p.parent;
+            }
+            return null;
+          })();
+          const botSvEntry = (() => {
+            if (!levelUnitsForSplit.length) return null;
+            let pid = levelUnitsForSplit[levelUnitsForSplit.length - 1].parent;
+            while (pid) {
+              if (splitViewUnitMap.has(pid)) return splitViewUnitMap.get(pid);
+              const p = UNIT_MAP[pid]; if (!p) break; pid = p.parent;
+            }
+            return null;
+          })();
+          if (topSvEntry) {
+            const pSpan = topSvEntry.propY1 - topSvEntry.propY0;
+            if (pSpan > 0) {
+              const ratio = (topSvEntry.eqY1 - topSvEntry.eqY0) / pSpan;
+              rawStripTop = topSvEntry.eqY0 + (rawStripTop - topSvEntry.propY0) * ratio;
+            }
+          }
+          if (botSvEntry) {
+            const pSpan = botSvEntry.propY1 - botSvEntry.propY0;
+            if (pSpan > 0) {
+              const ratio = (botSvEntry.eqY1 - botSvEntry.eqY0) / pSpan;
+              rawStripBottom = botSvEntry.eqY0 + (rawStripBottom - botSvEntry.propY0) * ratio;
+            }
+          }
+          const svStripTop    = Math.min(rawStripTop, rawStripBottom);
+          const svStripBottom = Math.max(rawStripTop, rawStripBottom);
           const svEqualSlotH  = levelUnitsForSplit.length ? (svStripBottom - svStripTop) / levelUnitsForSplit.length : 0;
           const unitDrawData  = levelUnitsForSplit.map((unit, i) => ({
             unit,
